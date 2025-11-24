@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<model type="com.apple.IDECoreDataModeler.DataModel" documentVersion="1.0" lastSavedToolsVersion="1" systemVersion="11A491" minimumToolsVersion="Automatic" sourceLanguage="Swift" usedWithCloudKit="false" userDefinedModelVersionIdentifier="">
+    <entity name="Job" representedClassName="Job" syncable="YES" codeGenerationType="class">
+        <attribute name="jobId" optional="NO" attributeType="String"/>
+        <attribute name="clientName" optional="YES" attributeType="String"/>
+        <attribute name="addressLine1" optional="YES" attributeType="String"/>
+        <attribute name="cleanedAddressLine1" optional="YES" attributeType="String"/>
+        <attribute name="city" optional="YES" attributeType="String"/>
+        <attribute name="state" optional="YES" attributeType="String"/>
+        <attribute name="zip" optional="YES" attributeType="String"/>
+        <attribute name="notes" optional="YES" attributeType="String"/>
+        <attribute name="phoneNumber" optional="YES" attributeType="String"/>
+        <attribute name="areasOfConcern" optional="YES" attributeType="String"/>
+        <attribute name="overheadImagePath" optional="YES" attributeType="String"/>
+        <attribute name="overheadImageSourceName" optional="YES" attributeType="String"/>
+        <attribute name="overheadImageSourceUrl" optional="YES" attributeType="String"/>
+        <attribute name="overheadImageFetchedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="wideMapImagePath" optional="YES" attributeType="String"/>
+        <attribute name="scalePixelsPerFoot" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
+        <attribute name="frontOfHomeImagePath" optional="YES" attributeType="String"/>
+        <attribute name="gaugeImagePath" optional="YES" attributeType="String"/>
+        <attribute name="inspectorName" optional="YES" attributeType="String"/>
+        <attribute name="inspectionDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="temperature" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
+        <attribute name="weatherCondition" optional="YES" attributeType="String"/>
+        <attribute name="humidity" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
+        <attribute name="windSpeed" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
+        <attribute name="testProcedure" optional="YES" attributeType="String" defaultValueString="ASTM E331"/>
+        <attribute name="waterPressure" optional="YES" attributeType="Double" defaultValueString="12.0" usesScalarValueType="YES"/>
+        <attribute name="status" optional="NO" attributeType="String" defaultValueString="Ready"/>
+        <attribute name="createdAt" optional="NO" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="updatedAt" optional="NO" attributeType="Date" usesScalarValueType="NO"/>
+        <relationship name="windows" optional="YES" toMany="YES" deletionRule="Cascade" destinationEntity="Window" inverseName="job" inverseEntity="Window"/>
+    </entity>
+    <entity name="Window" representedClassName="Window" syncable="YES" codeGenerationType="class">
+        <attribute name="windowId" optional="NO" attributeType="String"/>
+        <attribute name="windowNumber" optional="NO" attributeType="String"/>
+        <attribute name="xPosition" optional="NO" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
+        <attribute name="yPosition" optional="NO" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
+        <attribute name="width" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
+        <attribute name="height" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
+        <attribute name="windowType" optional="YES" attributeType="String"/>
+        <attribute name="material" optional="YES" attributeType="String"/>
+        <attribute name="testResult" optional="YES" attributeType="String"/>
+        <attribute name="leakPoints" optional="YES" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="isInaccessible" optional="NO" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="notes" optional="YES" attributeType="String"/>
+        <attribute name="createdAt" optional="NO" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="updatedAt" optional="NO" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="testStartTime" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="testStopTime" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <relationship name="job" optional="NO" maxCount="1" deletionRule="Nullify" destinationEntity="Job" inverseName="windows" inverseEntity="Job"/>
+        <relationship name="photos" optional="YES" toMany="YES" deletionRule="Cascade" destinationEntity="Photo" inverseName="window" inverseEntity="Photo"/>
+    </entity>
+    <entity name="Photo" representedClassName="Photo" syncable="YES" codeGenerationType="class">
+        <attribute name="photoId" optional="NO" attributeType="String"/>
+        <attribute name="photoType" optional="NO" attributeType="String"/>
+        <attribute name="localIdentifier" optional="YES" attributeType="String"/>
+        <attribute name="filePath" optional="YES" attributeType="String"/>
+        <attribute name="photoSource" optional="YES" attributeType="String" defaultValueString="PhotosLibrary"/>
+        <attribute name="createdAt" optional="NO" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="notes" optional="YES" attributeType="String"/>
+        <attribute name="arrowXPosition" optional="YES" attributeType="Double" usesScalarValueType="YES"/>
+        <attribute name="arrowYPosition" optional="YES" attributeType="Double" usesScalarValueType="YES"/>
+        <attribute name="arrowDirection" optional="YES" attributeType="String"/>
+        <attribute name="includeInReport" optional="NO" attributeType="Boolean" defaultValueString="YES" usesScalarValueType="YES"/>
+        <relationship name="window" optional="NO" maxCount="1" deletionRule="Nullify" destinationEntity="Window" inverseName="photos" inverseEntity="Window"/>
+    </entity>
+    <elements>
+        <element name="Job" positionX="-63" positionY="-18" width="128" height="164"/>
+        <element name="Window" positionX="144" positionY="-18" width="128" height="194"/>
+        <element name="Photo" positionX="288" positionY="-18" width="128" height="104"/>
+    </elements>
+</model>
+
