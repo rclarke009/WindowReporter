@@ -137,7 +137,37 @@ struct WindowEditorView: View {
                         }
                     }
                 }
+                
+                Section {
+                    HStack {
+                        Spacer()
+                        Button(action: {
+                            dismiss()
+                        }) {
+                            Text("Cancel")
+                                .frame(minWidth: 100)
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.bordered)
+                        
+                        Button(action: {
+                            saveWindow()
+                        }) {
+                            Text("Save")
+                                .frame(minWidth: 100)
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.return, modifiers: [.command])
+                        Spacer()
+                    }
+                    .padding(.vertical, 8)
+                }
             }
+            .frame(minWidth: 800, idealWidth: 1000, maxWidth: .infinity, minHeight: 600, idealHeight: 800, maxHeight: .infinity)
+            .formStyle(.grouped)
             .navigationTitle("Window \(windowNumber.isEmpty ? "?" : windowNumber)")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -149,6 +179,7 @@ struct WindowEditorView: View {
                     Button("Save") {
                         saveWindow()
                     }
+                    .keyboardShortcut(.return, modifiers: [.command])
                 }
             }
             .sheet(item: $showingPhotoPicker) { photoType in
