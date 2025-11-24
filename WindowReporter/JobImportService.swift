@@ -273,8 +273,11 @@ class JobImportService: ObservableObject {
         print("📦 Extracting ZIP from: \(sourceURL.path)")
         print("📦 To destination: \(destinationURL.path)")
         
-        guard let archive = Archive(url: sourceURL, accessMode: .read) else {
-            print("❌ Failed to open ZIP archive")
+        let archive: Archive
+        do {
+            archive = try Archive(url: sourceURL, accessMode: .read)
+        } catch {
+            print("❌ Failed to open ZIP archive: \(error.localizedDescription)")
             throw ImportError.unableToAccessFile
         }
         
@@ -554,16 +557,28 @@ class JobImportService: ObservableObject {
         await MainActor.run { importProgress = 0.5 }
         
         if let overheadFile = package.job.overheadImageFile {
+            print("📷 Importing overhead image: \(overheadFile)")
             try await importOverheadImage(from: directory, filePath: overheadFile, for: job)
+        } else {
+            print("⚠️ No overheadImageFile in package")
         }
         if let mapFile = package.job.wideMapImageFile {
+            print("📷 Importing wide map image: \(mapFile)")
             try await importWideMapImage(from: directory, filePath: mapFile, for: job)
+        } else {
+            print("⚠️ No wideMapImageFile in package")
         }
         if let frontOfHomeFile = package.job.frontOfHomeImageFile {
+            print("📷 Importing front of home image: \(frontOfHomeFile)")
             try await importFrontOfHomeImage(from: directory, filePath: frontOfHomeFile, for: job)
+        } else {
+            print("⚠️ No frontOfHomeImageFile in package")
         }
         if let gaugeFile = package.job.gaugeImageFile {
+            print("📷 Importing gauge image: \(gaugeFile)")
             try await importGaugeImage(from: directory, filePath: gaugeFile, for: job)
+        } else {
+            print("⚠️ No gaugeImageFile in package")
         }
         
         if let sourceName = package.job.overheadImageSourceName { job.overheadImageSourceName = sourceName }
@@ -634,8 +649,64 @@ class JobImportService: ObservableObject {
     }
     
     private func importOverheadImage(from directory: URL, filePath: String, for job: Job) async throws {
-        let sourceURL = directory.appendingPathComponent(filePath)
-        guard FileManager.default.fileExists(atPath: sourceURL.path) else { return }
+        // Strip leading slash if present (like ZIP extraction)
+        var imageFilePath = filePath
+        if imageFilePath.hasPrefix("/") {
+            imageFilePath = String(imageFilePath.dropFirst())
+        }
+        
+        // Try multiple path combinations
+        var sourceURL: URL?
+        
+        // Try 1: Direct path from directory
+        let directPath = directory.appendingPathComponent(imageFilePath)
+        if FileManager.default.fileExists(atPath: directPath.path) {
+            sourceURL = directPath
+            print("📷 Found overhead image at direct path: \(directPath.path)")
+        } else {
+            // Try 2: If path includes overhead/, check privateoverhead/ directory
+            if imageFilePath.contains("overhead/") {
+                let filename = (imageFilePath as NSString).lastPathComponent
+                let privateOverheadPath = directory.appendingPathComponent("privateoverhead").appendingPathComponent(filename)
+                if FileManager.default.fileExists(atPath: privateOverheadPath.path) {
+                    sourceURL = privateOverheadPath
+                    print("📷 Found overhead image in privateoverhead/: \(privateOverheadPath.path)")
+                }
+            }
+            
+            // Try 3: Extract filename from path and look in privateoverhead
+            if sourceURL == nil {
+                let filename = (imageFilePath as NSString).lastPathComponent
+                let privateOverheadPath = directory.appendingPathComponent("privateoverhead").appendingPathComponent(filename)
+                if FileManager.default.fileExists(atPath: privateOverheadPath.path) {
+                    sourceURL = privateOverheadPath
+                    print("📷 Found overhead image by filename in privateoverhead: \(privateOverheadPath.path)")
+                }
+            }
+            
+            // Try 4: If path already includes privatemap/, use it as-is (for map images)
+            if sourceURL == nil && imageFilePath.contains("privatemap/") {
+                let pathWithPrivate = directory.appendingPathComponent(imageFilePath)
+                if FileManager.default.fileExists(atPath: pathWithPrivate.path) {
+                    sourceURL = pathWithPrivate
+                    print("📷 Found overhead image at path with privatemap/: \(pathWithPrivate.path)")
+                }
+            }
+            
+            // Try 5: Add privatemap/ prefix
+            if sourceURL == nil {
+                let privatePath = directory.appendingPathComponent("privatemap").appendingPathComponent(imageFilePath)
+                if FileManager.default.fileExists(atPath: privatePath.path) {
+                    sourceURL = privatePath
+                    print("📷 Found overhead image at privatemap path: \(privatePath.path)")
+                }
+            }
+        }
+        
+        guard let finalURL = sourceURL else {
+            print("⚠️ Overhead image not found at any path for: \(filePath)")
+            return
+        }
         
         let overheadImagesDirectory = documentsDirectory.appendingPathComponent("overhead_images")
         try FileManager.default.createDirectory(at: overheadImagesDirectory, withIntermediateDirectories: true)
@@ -645,13 +716,60 @@ class JobImportService: ObservableObject {
         if FileManager.default.fileExists(atPath: destinationURL.path) {
             try FileManager.default.removeItem(at: destinationURL)
         }
-        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+        try FileManager.default.copyItem(at: finalURL, to: destinationURL)
         job.overheadImagePath = fileName
+        print("✅ Successfully imported overhead image: \(fileName)")
     }
     
     private func importWideMapImage(from directory: URL, filePath: String, for job: Job) async throws {
-        let sourceURL = directory.appendingPathComponent(filePath)
-        guard FileManager.default.fileExists(atPath: sourceURL.path) else { return }
+        // Strip leading slash if present (like ZIP extraction)
+        var imageFilePath = filePath
+        if imageFilePath.hasPrefix("/") {
+            imageFilePath = String(imageFilePath.dropFirst())
+        }
+        
+        // Try multiple path combinations
+        var sourceURL: URL?
+        
+        // Try 1: Direct path from directory
+        let directPath = directory.appendingPathComponent(imageFilePath)
+        if FileManager.default.fileExists(atPath: directPath.path) {
+            sourceURL = directPath
+            print("📷 Found wide map image at direct path: \(directPath.path)")
+        } else {
+            // Try 2: If path already includes privatemap/, use it as-is
+            if imageFilePath.contains("privatemap/") {
+                let pathWithPrivate = directory.appendingPathComponent(imageFilePath)
+                if FileManager.default.fileExists(atPath: pathWithPrivate.path) {
+                    sourceURL = pathWithPrivate
+                    print("📷 Found wide map image at path with privatemap/: \(pathWithPrivate.path)")
+                }
+            }
+            
+            // Try 3: Add privatemap/ prefix
+            if sourceURL == nil {
+                let privatePath = directory.appendingPathComponent("privatemap").appendingPathComponent(imageFilePath)
+                if FileManager.default.fileExists(atPath: privatePath.path) {
+                    sourceURL = privatePath
+                    print("📷 Found wide map image at privatemap path: \(privatePath.path)")
+                }
+            }
+            
+            // Try 4: Extract filename from path and look in privatemap
+            if sourceURL == nil {
+                let filename = (imageFilePath as NSString).lastPathComponent
+                let filenamePath = directory.appendingPathComponent("privatemap").appendingPathComponent(filename)
+                if FileManager.default.fileExists(atPath: filenamePath.path) {
+                    sourceURL = filenamePath
+                    print("📷 Found wide map image by filename in privatemap: \(filenamePath.path)")
+                }
+            }
+        }
+        
+        guard let finalURL = sourceURL else {
+            print("⚠️ Wide map image not found at any path for: \(filePath)")
+            return
+        }
         
         let mapImagesDirectory = documentsDirectory.appendingPathComponent("map_images")
         try FileManager.default.createDirectory(at: mapImagesDirectory, withIntermediateDirectories: true)
@@ -661,13 +779,65 @@ class JobImportService: ObservableObject {
         if FileManager.default.fileExists(atPath: destinationURL.path) {
             try FileManager.default.removeItem(at: destinationURL)
         }
-        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+        try FileManager.default.copyItem(at: finalURL, to: destinationURL)
         job.wideMapImagePath = fileName
+        print("✅ Successfully imported wide map image: \(fileName)")
     }
     
     private func importFrontOfHomeImage(from directory: URL, filePath: String, for job: Job) async throws {
-        let sourceURL = directory.appendingPathComponent(filePath)
-        guard FileManager.default.fileExists(atPath: sourceURL.path) else { return }
+        // Strip leading slash if present (like ZIP extraction)
+        var imageFilePath = filePath
+        if imageFilePath.hasPrefix("/") {
+            imageFilePath = String(imageFilePath.dropFirst())
+        }
+        
+        // Try multiple path combinations
+        var sourceURL: URL?
+        
+        // Try 1: Direct path from directory
+        let directPath = directory.appendingPathComponent(imageFilePath)
+        if FileManager.default.fileExists(atPath: directPath.path) {
+            sourceURL = directPath
+            print("📷 Found front of home image at direct path: \(directPath.path)")
+        } else {
+            // Try 2: If path includes images/, check images/ directory directly (export format)
+            if imageFilePath.contains("images/") {
+                let pathWithImages = directory.appendingPathComponent(imageFilePath)
+                if FileManager.default.fileExists(atPath: pathWithImages.path) {
+                    sourceURL = pathWithImages
+                    print("📷 Found front of home image at images/ path: \(pathWithImages.path)")
+                }
+            }
+            
+            // Try 3: Extract filename from path and look in images/ directory (export format)
+            if sourceURL == nil {
+                let filename = (imageFilePath as NSString).lastPathComponent
+                let imagesPath = directory.appendingPathComponent("images").appendingPathComponent(filename)
+                if FileManager.default.fileExists(atPath: imagesPath.path) {
+                    sourceURL = imagesPath
+                    print("📷 Found front of home image by filename in images/: \(imagesPath.path)")
+                }
+            }
+            
+            // Try 4: Check other possible directories (fallback)
+            if sourceURL == nil {
+                let filename = (imageFilePath as NSString).lastPathComponent
+                let possibleDirs = ["privateimages", "front_of_home_images", "privatefront_of_home"]
+                for dir in possibleDirs {
+                    let testPath = directory.appendingPathComponent(dir).appendingPathComponent(filename)
+                    if FileManager.default.fileExists(atPath: testPath.path) {
+                        sourceURL = testPath
+                        print("📷 Found front of home image in \(dir): \(testPath.path)")
+                        break
+                    }
+                }
+            }
+        }
+        
+        guard let finalURL = sourceURL else {
+            print("⚠️ Front of home image not found at any path for: \(filePath)")
+            return
+        }
         
         let imagesDirectory = documentsDirectory.appendingPathComponent("front_of_home_images")
         try FileManager.default.createDirectory(at: imagesDirectory, withIntermediateDirectories: true)
@@ -677,13 +847,65 @@ class JobImportService: ObservableObject {
         if FileManager.default.fileExists(atPath: destinationURL.path) {
             try FileManager.default.removeItem(at: destinationURL)
         }
-        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+        try FileManager.default.copyItem(at: finalURL, to: destinationURL)
         job.frontOfHomeImagePath = fileName
+        print("✅ Successfully imported front of home image: \(fileName)")
     }
     
     private func importGaugeImage(from directory: URL, filePath: String, for job: Job) async throws {
-        let sourceURL = directory.appendingPathComponent(filePath)
-        guard FileManager.default.fileExists(atPath: sourceURL.path) else { return }
+        // Strip leading slash if present (like ZIP extraction)
+        var imageFilePath = filePath
+        if imageFilePath.hasPrefix("/") {
+            imageFilePath = String(imageFilePath.dropFirst())
+        }
+        
+        // Try multiple path combinations
+        var sourceURL: URL?
+        
+        // Try 1: Direct path from directory
+        let directPath = directory.appendingPathComponent(imageFilePath)
+        if FileManager.default.fileExists(atPath: directPath.path) {
+            sourceURL = directPath
+            print("📷 Found gauge image at direct path: \(directPath.path)")
+        } else {
+            // Try 2: If path includes images/, check images/ directory directly (export format)
+            if imageFilePath.contains("images/") {
+                let pathWithImages = directory.appendingPathComponent(imageFilePath)
+                if FileManager.default.fileExists(atPath: pathWithImages.path) {
+                    sourceURL = pathWithImages
+                    print("📷 Found gauge image at images/ path: \(pathWithImages.path)")
+                }
+            }
+            
+            // Try 3: Extract filename from path and look in images/ directory (export format)
+            if sourceURL == nil {
+                let filename = (imageFilePath as NSString).lastPathComponent
+                let imagesPath = directory.appendingPathComponent("images").appendingPathComponent(filename)
+                if FileManager.default.fileExists(atPath: imagesPath.path) {
+                    sourceURL = imagesPath
+                    print("📷 Found gauge image by filename in images/: \(imagesPath.path)")
+                }
+            }
+            
+            // Try 4: Check other possible directories (fallback)
+            if sourceURL == nil {
+                let filename = (imageFilePath as NSString).lastPathComponent
+                let possibleDirs = ["privateimages", "gauge_images", "privategauge"]
+                for dir in possibleDirs {
+                    let testPath = directory.appendingPathComponent(dir).appendingPathComponent(filename)
+                    if FileManager.default.fileExists(atPath: testPath.path) {
+                        sourceURL = testPath
+                        print("📷 Found gauge image in \(dir): \(testPath.path)")
+                        break
+                    }
+                }
+            }
+        }
+        
+        guard let finalURL = sourceURL else {
+            print("⚠️ Gauge image not found at any path for: \(filePath)")
+            return
+        }
         
         let imagesDirectory = documentsDirectory.appendingPathComponent("gauge_images")
         try FileManager.default.createDirectory(at: imagesDirectory, withIntermediateDirectories: true)
@@ -693,8 +915,9 @@ class JobImportService: ObservableObject {
         if FileManager.default.fileExists(atPath: destinationURL.path) {
             try FileManager.default.removeItem(at: destinationURL)
         }
-        try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+        try FileManager.default.copyItem(at: finalURL, to: destinationURL)
         job.gaugeImagePath = fileName
+        print("✅ Successfully imported gauge image: \(fileName)")
     }
     
     // MARK: - Photo Import (macOS: uses file system instead of Photos library)
