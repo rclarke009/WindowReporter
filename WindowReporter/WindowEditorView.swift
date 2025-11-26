@@ -223,6 +223,16 @@ struct PhotoThumbnailView: View {
     @ObservedObject var photo: Photo
     @State private var image: NSImage?
     @State private var isLoading = true
+    @State private var showingNoteEditor = false
+    @Environment(\.managedObjectContext) private var viewContext
+    
+    // Get photoType from photo object
+    private var photoType: PhotoType {
+        if let photoTypeString = photo.photoType {
+            return PhotoType(rawValue: photoTypeString) ?? .exterior
+        }
+        return .exterior
+    }
     
     var body: some View {
         VStack(spacing: 4) {
@@ -250,10 +260,43 @@ struct PhotoThumbnailView: View {
                     .foregroundColor(.secondary)
                     .lineLimit(2)
                     .frame(width: 150)
+            } else {
+                Text("Tap to add note")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .frame(width: 150)
             }
+        }
+        .onTapGesture {
+            showingNoteEditor = true
         }
         .onAppear {
             loadImage()
+        }
+        .sheet(isPresented: $showingNoteEditor) {
+            PhotoNoteSelectionView(
+                photo: photo,
+                photoType: photoType,
+                currentNote: photo.notes,
+                onNoteSaved: { note in
+                    saveNoteToPhoto(photo: photo, note: note)
+                },
+                onCancel: {
+                    showingNoteEditor = false
+                }
+            )
+            .frame(width: 600, height: 700)
+        }
+    }
+    
+    private func saveNoteToPhoto(photo: Photo, note: String?) {
+        photo.notes = note
+        do {
+            try viewContext.save()
+            showingNoteEditor = false
+        } catch {
+            print("Failed to save note: \(error.localizedDescription)")
         }
     }
     
