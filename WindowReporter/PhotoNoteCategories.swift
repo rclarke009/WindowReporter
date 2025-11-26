@@ -80,19 +80,24 @@ struct PhotoNoteCategories {
         PhotoNoteCategory(
             name: "Overview Photo",
             options: [
-                "Interior view of the window."
+                "Interior view of the window.",
+                "Wide view of the room containing the specimen.",
+                "Wide view of the window from the interior."
             ]
         ),
         PhotoNoteCategory(
-            name: "Drywall Cracks",
+            name: "Frame to Wall",
             options: [
                 "Crack between frame and drywall due to cyclical wind pressures.",
                 "Crack in drywall due to cyclical wind pressures.",
                 "Recent crack at drywall due to cyclical wind pressures.",
-                "Close-up of crack in drywall.",
-                "Water stain is visible here.",
                 "This crack is an indication of cyclical pressure causing movement.",
-                "Cracking in drywall near frame; drywall cracks show signs of shear stress."
+                "Close-up of crack/separation in drywall.",
+                "Cracking in drywall near frame; drywall cracks show signs of shear stress.",
+                "Macro lens image shows the opening is fairly clean and free of debris.",
+                "Interior frame separation from wall.",
+                "Recent separation of the window frame and the drywall."
+
             ]
         ),
         PhotoNoteCategory(
@@ -103,17 +108,11 @@ struct PhotoNoteCategories {
             ]
         ),
         PhotoNoteCategory(
-            name: "Windowsill Separations",
+            name: "Windowsill Separations/???",
             options: [
                 "Separation at windowsill and wall.",
-                "Some separation between windowsill and drywall."
-            ]
-        ),
-        PhotoNoteCategory(
-            name: "Frame and Trim Issues",
-            options: [
-                "Interior frame separation from wall.",
-                "Recent separation ofthe window frame and the drywall."
+                "Some separation between windowsill and drywall.  This is due to cyclical wind pressures.",
+                "Separation at window sill and wall due to cyclical wind pressures.  Shearing can be seen because of the diagonal stretching of the paint.  Paint has elastomeric properties and during shearing stress, one can see that the two side were shifted out of alignment."
             ]
         ),
         PhotoNoteCategory(
@@ -129,7 +128,8 @@ struct PhotoNoteCategories {
             options: [
                 "Active water leak visible.",
                 "Water staining indicating leak.",
-                "Moisture present at leak location."
+                "Moisture present at leak location.",
+                "Water stain is visible here."
             ]
         ),
         PhotoNoteCategory(

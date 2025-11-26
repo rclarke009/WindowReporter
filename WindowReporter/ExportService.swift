@@ -73,10 +73,10 @@ struct FieldResultsPackage {
         let exportDirectory = documentsDirectory.appendingPathComponent("exports")
         try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
         
-        let jobId = job.jobId ?? "Unknown"
+        let addressNameId = generateAddressNameIdentifier(for: job)
         let city = job.city ?? "Unknown"
         let dateString = DateFormatter.exportDate.string(from: Date())
-        let packageName = "\(jobId)_WindowTest_FieldReport_\(city)_\(dateString)"
+        let packageName = "\(addressNameId)_WindowTest_FieldReport_\(city)_\(dateString)"
         
         print("📦 Creating package: \(packageName)")
         
@@ -165,6 +165,41 @@ struct FieldResultsPackage {
         let sanitized = value.replacingOccurrences(of: "[^A-Za-z0-9_-]", with: "_", options: .regularExpression)
         let trimmed = sanitized.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
         return trimmed.isEmpty ? "Report" : trimmed
+    }
+    
+    /// Generate a sanitized address-name identifier for use in filenames
+    private func generateAddressNameIdentifier(for job: Job) -> String {
+        let address = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+        let clientName = job.clientName ?? ""
+        
+        var components: [String] = []
+        
+        // Sanitize and add address if available
+        if !address.isEmpty {
+            let sanitizedAddress = sanitizeFilenameComponent(address)
+            if !sanitizedAddress.isEmpty {
+                components.append(sanitizedAddress)
+            }
+        }
+        
+        // Sanitize and add client name if available
+        if !clientName.isEmpty {
+            let sanitizedName = sanitizeFilenameComponent(clientName)
+            if !sanitizedName.isEmpty {
+                components.append(sanitizedName)
+            }
+        }
+        
+        // If we have components, join them; otherwise use a fallback
+        if !components.isEmpty {
+            return components.joined(separator: "_")
+        } else {
+            // Fallback to city if available, otherwise "Unknown"
+            if let city = job.city, !city.isEmpty {
+                return sanitizeFilenameComponent(city)
+            }
+            return "Unknown"
+        }
     }
     
     private func dotColor(for window: Window) -> NSColor {
@@ -525,7 +560,7 @@ struct FieldResultsPackage {
 
         let temporaryDocURL = try await generateDOCXReport(in: workingDirectory)
         
-        let baseName = sanitizeFilenameComponent(job.jobId ?? "WindowTests")
+        let baseName = generateAddressNameIdentifier(for: job)
         let timestamp = DateFormatter.exportDate.string(from: Date())
         let finalURL = reportsRoot.appendingPathComponent("\(baseName)_Report_\(timestamp).docx")
         
@@ -713,6 +748,11 @@ struct FieldResultsPackage {
         // Helper function to end a page
         func endPage() {
             print("📄 Ending page \(pageNumber)")
+            
+            // CRITICAL: End the PDF page BEFORE clearing graphics context
+            // This must be called before beginPage() for the next page
+            pdfContext.endPage()
+            
             // CRITICAL: Clear graphics context BEFORE next beginPage
             // This must happen before the next beginPage call
             NSGraphicsContext.current = nil
@@ -720,8 +760,7 @@ struct FieldResultsPackage {
             // Flush the PDF context to ensure all drawing operations are complete
             pdfContext.flush()
             
-            print("✅ Graphics context cleared and flushed for page \(pageNumber)")
-            // Note: Don't call pdfContext.endPage() - beginPage() for next page handles it
+            print("✅ Page ended, graphics context cleared and flushed for page \(pageNumber)")
         }
         
         print("📊 Starting PDF generation with \(totalPages) total pages")
@@ -806,10 +845,10 @@ struct FieldResultsPackage {
         let exportDirectory = documentsDirectory.appendingPathComponent("exports")
         try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
         
-        let jobId = job.jobId ?? "Unknown"
+        let addressNameId = generateAddressNameIdentifier(for: job)
         let city = job.city ?? "Unknown"
         let dateString = DateFormatter.exportDate.string(from: Date())
-        let fileName = "\(jobId)_\(city)_\(dateString).pdf"
+        let fileName = "\(addressNameId)_\(city)_\(dateString).pdf"
         
         let pdfData = try await generatePDFReport()
         let pdfURL = exportDirectory.appendingPathComponent(fileName)
@@ -824,10 +863,11 @@ struct FieldResultsPackage {
     let titleFont = NSFont.boldSystemFont(ofSize: 24)
     let titleAttributes: [NSAttributedString.Key: Any] = [
         .font: titleFont,
-        .foregroundColor: NSColor(red: 0.0, green: 0.2, blue: 0.4, alpha: 1.0)
+        .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
     ]
     let titleHeight: CGFloat = 30
-    let titleRect = CGRect(x: 50, y: 30, width: pageRect.width - 100, height: titleHeight)
+    // Use backwards coordinate technique - bottom Y to render at top
+    let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
     "WINDOW TESTING".draw(in: titleRect, withAttributes: titleAttributes)
     
     // General Test Information Table - position below title (reduced margin for shift up)
@@ -943,7 +983,7 @@ struct FieldResultsPackage {
     //     let titleFont = NSFont.boldSystemFont(ofSize: 24)
     //     let titleAttributes: [NSAttributedString.Key: Any] = [
     //         .font: titleFont,
-    //         .foregroundColor: NSColor(red: 0.0, green: 0.2, blue: 0.4, alpha: 1.0)
+    //         .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
     //     ]
     //     // Use draw(in:) with a rect for more predictable positioning
     //     let titleHeight: CGFloat = 30
@@ -1358,34 +1398,63 @@ struct FieldResultsPackage {
             drawNSImage(image, in: imageRectBottomUp, context: context)
         }
         
-        // Add owner name and address at the bottom in large bold text
-        let ownerName = job.clientName ?? "Unknown"
-        // Use cleaned address if available, fallback to original
-        let addressLine1 = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
-        let addressLine2 = formatAddressForExport(addressLine1: "", city: job.city, state: job.state, zip: job.zip)
+        // Add "Prepared for:", "Owner Name:", and "Address:" labels
+        // Position from top: 1 inch = 72 points
+        let trimmedClient = job.clientName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown"
+        let ownerName = job.clientName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown"
+        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
         
-        // Large bold font for owner name and address
-        let largeFont = NSFont.boldSystemFont(ofSize: 18)
-        let largeAttributes: [NSAttributedString.Key: Any] = [
-            .font: largeFont,
-            .foregroundColor: NSColor.black
+        // Format address line 2 (city, state zip)
+        var addressLine2Components: [String] = []
+        if let city = job.city?.trimmingCharacters(in: .whitespacesAndNewlines), !city.isEmpty {
+            addressLine2Components.append(city + ",")
+        }
+        if let state = job.state?.trimmingCharacters(in: .whitespacesAndNewlines), !state.isEmpty {
+            addressLine2Components.append(state)
+        }
+        if let zip = job.zip?.trimmingCharacters(in: .whitespacesAndNewlines), !zip.isEmpty {
+            addressLine2Components.append(zip)
+        }
+        let addressLine2 = addressLine2Components.joined(separator: " ")
+        
+        // Font styling matching DOCX export (size 14, color #10325d)
+        let textFont = NSFont.systemFont(ofSize: 14)
+        let textAttributes: [NSAttributedString.Key: Any] = [
+            .font: textFont,
+            .foregroundColor: NSColor(red: 16/255.0, green: 50/255.0, blue: 93/255.0, alpha: 1.0)  // Color #10325d
         ]
         
-        // Position at bottom of page (with some margin from bottom)
-        // Increased bottom margin by ~1 inch (72 points) to raise the text
-        let bottomMargin: CGFloat = 152  // Space from bottom (was 80, now 80 + 72)
-        let textY = pageRect.height - bottomMargin  // Top-down coordinate
+        // Position from top: 1 inch = 72 points
+        // X position: 0.83 inches = 60 points from left (matching DOCX)
+        // NOTE: Swapped order due to PDF rendering being backwards - Address first in code to render last
+        let xPosition: CGFloat = 60
+        let addressY: CGFloat = 72  // 1 inch from top (first in code, should render last/bottom)
+        let ownerNameY: CGFloat = 90    // 1.25 inches from top (second in code, should render middle)
+        let preparedForY: CGFloat = 108     // 1.5 inches from top (last in code, should render first/top)
         
-        // Draw owner name
-        ownerName.draw(at: CGPoint(x: 50, y: textY), withAttributes: largeAttributes)
+        // Draw "Address:" label and address line 1 (first in code, should render last/bottom)
+        let addressLabel = "Address:"
+        addressLabel.draw(at: CGPoint(x: xPosition, y: addressY), withAttributes: textAttributes)
+        if !addressToUse.isEmpty {
+            addressToUse.draw(at: CGPoint(x: xPosition + 100, y: addressY), withAttributes: textAttributes)
+        }
         
-        // Draw address line 1 (street address) below owner name
-        let addressLine1Y = textY + largeFont.lineHeight + 8
-        addressLine1.draw(at: CGPoint(x: 50, y: addressLine1Y), withAttributes: largeAttributes)
+        // Draw address line 2 (city, state zip) below address line 1
+        // Use font lineHeight like WindowTest, but subtract due to backwards rendering
+        if !addressLine2.isEmpty {
+            let addressLine2Y = addressY - (textFont.lineHeight + 4)  // Subtract instead of add due to backwards rendering
+            addressLine2.draw(at: CGPoint(x: xPosition + 100, y: addressLine2Y), withAttributes: textAttributes)
+        }
         
-        // Draw address line 2 (city, state, zip) below address line 1
-        let addressLine2Y = addressLine1Y + largeFont.lineHeight + 4
-        addressLine2.draw(at: CGPoint(x: 50, y: addressLine2Y), withAttributes: largeAttributes)
+        // Draw "Owner Name:" label and owner name (second in code, should render middle)
+        let ownerNameLabel = "Owner Name:"
+        ownerNameLabel.draw(at: CGPoint(x: xPosition, y: ownerNameY), withAttributes: textAttributes)
+        ownerName.draw(at: CGPoint(x: xPosition + 100, y: ownerNameY), withAttributes: textAttributes)
+        
+        // Draw "Prepared for:" label and client name (last in code, should render first/top)
+        let preparedForLabel = "Prepared for:"
+        preparedForLabel.draw(at: CGPoint(x: xPosition, y: preparedForY), withAttributes: textAttributes)
+        trimmedClient.draw(at: CGPoint(x: xPosition + 100, y: preparedForY), withAttributes: textAttributes)
     }
     
     private func drawOverviewPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
@@ -1393,10 +1462,11 @@ struct FieldResultsPackage {
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
-            .foregroundColor: NSColor(red: 0.0, green: 0.2, blue: 0.4, alpha: 1.0)
+            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
-        let titleRect = CGRect(x: 50, y: 30, width: pageRect.width - 100, height: titleHeight)
+        // Use backwards coordinate technique - bottom Y to render at top
+        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "OVERVIEW".draw(in: titleRect, withAttributes: titleAttributes)
         
         // Load overhead image
@@ -1530,10 +1600,11 @@ struct FieldResultsPackage {
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
-            .foregroundColor: NSColor(red: 0.0, green: 0.2, blue: 0.4, alpha: 1.0)
+            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
-        let titleRect = CGRect(x: 50, y: 30, width: pageRect.width - 100, height: titleHeight)
+        // Use backwards coordinate technique - bottom Y to render at top
+        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "ENGINEERING LETTER".draw(in: titleRect, withAttributes: titleAttributes)
         
         var currentY = titleRect.maxY + 20
@@ -1708,10 +1779,11 @@ struct FieldResultsPackage {
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
-            .foregroundColor: NSColor(red: 0.0, green: 0.2, blue: 0.4, alpha: 1.0)
+            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
-        let titleRect = CGRect(x: 50, y: 30, width: pageRect.width - 100, height: titleHeight)
+        // Use backwards coordinate technique - bottom Y to render at top
+        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "WINDOW TESTING".draw(in: titleRect, withAttributes: titleAttributes)
         
         // Calculate box dimensions
@@ -1955,8 +2027,9 @@ struct FieldResultsPackage {
             
             // Center the image
             let imageX = (pageRect.width - imageWidth) / 2
-            let imageRect = CGRect(x: imageX, y: currentY, width: imageWidth, height: imageHeight)
-            drawNSImage(image, in: imageRect, context: context)
+            // Convert top-down Y to bottom-up Y for CGContext drawing
+            let imageRectBottomUp = CGRect(x: imageX, y: pageRect.height - currentY - imageHeight, width: imageWidth, height: imageHeight)
+            drawNSImage(image, in: imageRectBottomUp, context: context)
             currentY += imageHeight + 15  // Reduced spacing to fit both images
         }
         
@@ -1980,8 +2053,9 @@ struct FieldResultsPackage {
             
             // Center the image
             let imageX = (pageRect.width - imageWidth) / 2
-            let imageRect = CGRect(x: imageX, y: currentY, width: imageWidth, height: imageHeight)
-            drawNSImage(image, in: imageRect, context: context)
+            // Convert top-down Y to bottom-up Y for CGContext drawing
+            let imageRectBottomUp = CGRect(x: imageX, y: pageRect.height - currentY - imageHeight, width: imageWidth, height: imageHeight)
+            drawNSImage(image, in: imageRectBottomUp, context: context)
         }
         
         // Footer at bottom
@@ -2018,10 +2092,11 @@ struct FieldResultsPackage {
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
-            .foregroundColor: NSColor(red: 0.0, green: 0.2, blue: 0.4, alpha: 1.0)
+            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
-        let titleRect = CGRect(x: 50, y: 30, width: pageRect.width - 100, height: titleHeight)
+        // Use backwards coordinate technique - bottom Y to render at top
+        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "SPECIMEN LOCATIONS".draw(in: titleRect, withAttributes: titleAttributes)
         
         // Draw legend above the image
@@ -2167,10 +2242,11 @@ struct FieldResultsPackage {
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
-            .foregroundColor: NSColor(red: 0.0, green: 0.2, blue: 0.4, alpha: 1.0)
+            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
-        let titleRect = CGRect(x: 50, y: 30, width: pageRect.width - 100, height: titleHeight)
+        // Use backwards coordinate technique - bottom Y to render at top
+        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "SUMMARY OF FINDINGS".draw(in: titleRect, withAttributes: titleAttributes)
         
         // Address below heading
@@ -2353,9 +2429,9 @@ struct FieldResultsPackage {
             .foregroundColor: NSColor.black
         ]
         let windowTitle = window.windowNumber ?? "Unknown"
-        // Use draw(in:) with a rect - top-down coordinates: small Y value for top
+        // Use backwards coordinate technique - bottom Y to render at top
         let titleHeight: CGFloat = 25
-        let titleRect = CGRect(x: 50, y: 30, width: pageRect.width - 100, height: titleHeight)
+        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
         windowTitle.draw(in: titleRect, withAttributes: titleAttributes)
         
         // Layout 4 photos in a 2x2 grid - position below title using top-down coordinates
@@ -2399,8 +2475,9 @@ struct FieldResultsPackage {
                 processedImage = originalImage
             }
             
-            let imageRect = CGRect(x: x, y: photoYTopDown, width: photoSize, height: photoSize)
-            drawNSImage(processedImage, in: imageRect, context: context)
+            // Convert top-down Y to bottom-up Y for CGContext drawing
+            let imageRectBottomUp = CGRect(x: x, y: pageRect.height - photoYTopDown - photoSize, width: photoSize, height: photoSize)
+            drawNSImage(processedImage, in: imageRectBottomUp, context: context)
             
             // Draw arrow if present (use original image size for coordinate conversion)
             let arrowX = photoData.photo.arrowXPosition
@@ -2467,7 +2544,8 @@ struct FieldResultsPackage {
             .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
-        let titleRect = CGRect(x: 50, y: 30, width: pageRect.width - 100, height: titleHeight)
+        // Use backwards coordinate technique - bottom Y to render at top
+        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "CALIBRATED EQUIPMENT".draw(in: titleRect, withAttributes: titleAttributes)
         
         var currentY = titleRect.maxY + 40
@@ -2499,10 +2577,12 @@ struct FieldResultsPackage {
             }
             
             let imageX = (pageRect.width - imageWidth) / 2
-            let imageRect = CGRect(x: imageX, y: currentY, width: imageWidth, height: imageHeight)
-            drawNSImage(image, in: imageRect, context: context)
+            // Convert top-down Y to bottom-up Y for CGContext drawing
+            let imageRectBottomUp = CGRect(x: imageX, y: pageRect.height - currentY - imageHeight, width: imageWidth, height: imageHeight)
+            drawNSImage(image, in: imageRectBottomUp, context: context)
             
-            currentY = imageRect.maxY + 15
+            // Calculate next currentY using top-down coordinates (for text drawing)
+            currentY = currentY + imageHeight + 15
             
             // Location text
             let locationFont = NSFont.boldSystemFont(ofSize: 12)
@@ -2540,10 +2620,12 @@ struct FieldResultsPackage {
             }
             
             let imageX = (pageRect.width - imageWidth) / 2
-            let imageRect = CGRect(x: imageX, y: currentY, width: imageWidth, height: imageHeight)
-            drawNSImage(image, in: imageRect, context: context)
+            // Convert top-down Y to bottom-up Y for CGContext drawing
+            let imageRectBottomUp = CGRect(x: imageX, y: pageRect.height - currentY - imageHeight, width: imageWidth, height: imageHeight)
+            drawNSImage(image, in: imageRectBottomUp, context: context)
             
-            currentY = imageRect.maxY + 15
+            // Calculate next currentY using top-down coordinates (for text drawing)
+            currentY = currentY + imageHeight + 15
             
             // Location text
             let locationFont = NSFont.boldSystemFont(ofSize: 12)
@@ -2588,10 +2670,11 @@ struct FieldResultsPackage {
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
-            .foregroundColor: NSColor(red: 0.0, green: 0.2, blue: 0.4, alpha: 1.0)
+            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
-        let titleRect = CGRect(x: 50, y: 30, width: pageRect.width - 100, height: titleHeight)
+        // Use backwards coordinate technique - bottom Y to render at top
+        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "SOURCES".draw(in: titleRect, withAttributes: titleAttributes)
         
         var currentY = titleRect.maxY + 30
@@ -2646,10 +2729,11 @@ struct FieldResultsPackage {
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
-            .foregroundColor: NSColor(red: 0.0, green: 0.2, blue: 0.4, alpha: 1.0)
+            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
-        let titleRect = CGRect(x: 50, y: 30, width: pageRect.width - 100, height: titleHeight)
+        // Use backwards coordinate technique - bottom Y to render at top
+        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "CREDENTIALS".draw(in: titleRect, withAttributes: titleAttributes)
         
         var currentY = titleRect.maxY + 30
@@ -3246,14 +3330,55 @@ class FullJobPackageExporter {
         self.documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
     }
     
+    /// Generate a sanitized address-name identifier for use in filenames
+    private func generateAddressNameIdentifier(for job: Job) -> String {
+        let address = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+        let clientName = job.clientName ?? ""
+        
+        var components: [String] = []
+        
+        // Sanitize and add address if available
+        if !address.isEmpty {
+            let sanitizedAddress = sanitizeFilenameComponent(address)
+            if !sanitizedAddress.isEmpty {
+                components.append(sanitizedAddress)
+            }
+        }
+        
+        // Sanitize and add client name if available
+        if !clientName.isEmpty {
+            let sanitizedName = sanitizeFilenameComponent(clientName)
+            if !sanitizedName.isEmpty {
+                components.append(sanitizedName)
+            }
+        }
+        
+        // If we have components, join them; otherwise use a fallback
+        if !components.isEmpty {
+            return components.joined(separator: "_")
+        } else {
+            // Fallback to city if available, otherwise "Unknown"
+            if let city = job.city, !city.isEmpty {
+                return sanitizeFilenameComponent(city)
+            }
+            return "Unknown"
+        }
+    }
+    
+    private func sanitizeFilenameComponent(_ value: String) -> String {
+        let sanitized = value.replacingOccurrences(of: "[^A-Za-z0-9_-]", with: "_", options: .regularExpression)
+        let trimmed = sanitized.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        return trimmed.isEmpty ? "Report" : trimmed
+    }
+    
     func export() async throws -> URL {
         print("🚀 Starting Full Job Package export for job: \(job.jobId ?? "Unknown")")
         
-        let jobId = job.jobId ?? "Unknown"
+        let addressNameId = generateAddressNameIdentifier(for: job)
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
         let timestamp = dateFormatter.string(from: Date())
-        let packageName = "\(jobId)_WindowTest_FullJob_\(timestamp)"
+        let packageName = "\(addressNameId)_WindowTest_FullJob_\(timestamp)"
         
         let exportDirectory = documentsDirectory.appendingPathComponent("exports")
         try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
@@ -3281,7 +3406,7 @@ class FullJobPackageExporter {
         if let overheadPath = job.overheadImagePath {
             let sourceURL = documentsDirectory.appendingPathComponent("overhead_images").appendingPathComponent(overheadPath)
             if FileManager.default.fileExists(atPath: sourceURL.path) {
-                let destFileName = "\(jobId)_overhead.jpg"
+                let destFileName = "\(addressNameId)_overhead.jpg"
                 let destURL = overheadDir.appendingPathComponent(destFileName)
                 try FileManager.default.copyItem(at: sourceURL, to: destURL)
                 overheadImageFile = "overhead/\(destFileName)"
@@ -3292,7 +3417,7 @@ class FullJobPackageExporter {
         if let mapPath = job.wideMapImagePath {
             let sourceURL = documentsDirectory.appendingPathComponent("map_images").appendingPathComponent(mapPath)
             if FileManager.default.fileExists(atPath: sourceURL.path) {
-                let destFileName = "\(jobId)_location_map.png"
+                let destFileName = "\(addressNameId)_location_map.png"
                 let destURL = mapDir.appendingPathComponent(destFileName)
                 try FileManager.default.copyItem(at: sourceURL, to: destURL)
                 wideMapImageFile = "map/\(destFileName)"
