@@ -332,8 +332,9 @@ struct PhotoNoteSelectionView: View {
                             break
                         }
                     }
-                // If no match found, it's a custom note - don't pre-select any category
-                // User can select any category and use the custom note option
+                    // If no match found, it's a custom note - don't pre-select any category
+                    // User can select any category and use the custom note option
+                }
             }
         }
         .frame(width: 600, height: 700)

@@ -627,6 +627,9 @@ struct ExportView: View {
     @State private var isExportingPdf = false
     @State private var pdfError: String?
     @State private var pdfFileURL: URL?
+    @State private var isExportingFullPackage = false
+    @State private var fullPackageFileURL: URL?
+    @State private var fullPackageError: String?
     
     var body: some View {
         ScrollView {
@@ -749,6 +752,63 @@ struct ExportView: View {
                         .padding()
                         .background(Color(.controlBackgroundColor))
                         .cornerRadius(8)
+                        
+                        // Full Job Package Export
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Image(systemName: "arrow.triangle.2.circlepath")
+                                    .font(.title2)
+                                    .foregroundColor(.orange)
+                                Text("Full Job Package")
+                                    .font(.headline)
+                                Spacer()
+                            }
+                            
+                            Text("Export complete job data for transfer to another device")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            
+                            Button(action: {
+                                exportFullJobPackage()
+                            }) {
+                                HStack {
+                                    if isExportingFullPackage {
+                                        ProgressView()
+                                            .scaleEffect(0.8)
+                                    } else {
+                                        Image(systemName: "square.and.arrow.down")
+                                    }
+                                    Text(isExportingFullPackage ? "Exporting..." : "Export Full Package")
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isExportingFullPackage)
+                            
+                            if let error = fullPackageError {
+                                Text("Error: \(error)")
+                                    .font(.caption)
+                                    .foregroundColor(.red)
+                            }
+                            
+                            if let fileURL = fullPackageFileURL {
+                                HStack {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                    Text("Exported: \(fileURL.lastPathComponent)")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Button("Reveal in Finder") {
+                                        NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .font(.caption)
+                                }
+                            }
+                        }
+                        .padding()
+                        .background(Color(.controlBackgroundColor))
+                        .cornerRadius(8)
                     }
                     .padding()
                 }
@@ -802,6 +862,33 @@ struct ExportView: View {
                 await MainActor.run {
                     pdfError = error.localizedDescription
                     isExportingPdf = false
+                }
+            }
+        }
+    }
+    
+    private func exportFullJobPackage() {
+        guard !isExportingFullPackage else { return }
+        isExportingFullPackage = true
+        fullPackageError = nil
+        fullPackageFileURL = nil
+        
+        Task {
+            do {
+                let exporter = FullJobPackageExporter(job: job)
+                let zipURL = try await exporter.export()
+                
+                await MainActor.run {
+                    fullPackageFileURL = zipURL
+                    isExportingFullPackage = false
+                    // Open the file location
+                    NSWorkspace.shared.activateFileViewerSelecting([zipURL])
+                }
+            } catch {
+                print("❌ Full Job Package export failed: \(error.localizedDescription)")
+                await MainActor.run {
+                    fullPackageError = error.localizedDescription
+                    isExportingFullPackage = false
                 }
             }
         }

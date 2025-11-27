@@ -866,8 +866,9 @@ struct FieldResultsPackage {
         .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
     ]
     let titleHeight: CGFloat = 30
+    let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
     // Use backwards coordinate technique - bottom Y to render at top
-    let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
+    let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
     "WINDOW TESTING".draw(in: titleRect, withAttributes: titleAttributes)
     
     // General Test Information Table - position below title (reduced margin for shift up)
@@ -1458,18 +1459,34 @@ struct FieldResultsPackage {
     }
     
     private func drawOverviewPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
-        // Title at top - "OVERVIEW"
+        // Layout: Title -> Address subtitle -> Image -> Metadata
+        
+        // 1. Title "OVERVIEW" - moved down ~50 points from very top
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
             .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
+        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80
         // Use backwards coordinate technique - bottom Y to render at top
-        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
+        let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "OVERVIEW".draw(in: titleRect, withAttributes: titleAttributes)
         
-        // Load overhead image
+        // 2. Address subtitle - directly below title in smaller dark blue font
+        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+        if !addressToUse.isEmpty {
+            let addressSubtitleFont = NSFont.systemFont(ofSize: 14)
+            let addressSubtitleAttributes: [NSAttributedString.Key: Any] = [
+                .font: addressSubtitleFont,
+                .foregroundColor: NSColor(red: 16/255.0, green: 50/255.0, blue: 93/255.0, alpha: 1.0)  // Dark blue #10325d
+            ]
+            // Position address subtitle below title - use backwards calculation
+            let addressSubtitleY = pageRect.height - (titleYFromTop + titleHeight + 20)  // 20 points below title
+            addressToUse.draw(at: CGPoint(x: 50, y: addressSubtitleY), withAttributes: addressSubtitleAttributes)
+        }
+        
+        // 3. Load and draw overhead image - positioned below address subtitle
         var overheadImage: NSImage?
         if let imagePath = job.overheadImagePath {
             let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -1479,7 +1496,66 @@ struct FieldResultsPackage {
             }
         }
         
-        // Draw report metadata right below the title (temporary until image positioning is fixed)
+        // Calculate image position - below address subtitle, above metadata
+        var imageBottomY: CGFloat = 0
+        var imageHeight: CGFloat = 0
+        var imageX: CGFloat = 0
+        var imageWidth: CGFloat = 0
+        
+        if let image = overheadImage {
+            // Image size: Use fixed maximum size - doubled to match user request
+            let maxDimension: CGFloat = 360  // Maximum 360 points for largest dimension (doubled from 180)
+            let imageAspectRatio = image.size.width / image.size.height
+            
+            // Calculate size maintaining aspect ratio, constrained to maxDimension
+            if imageAspectRatio > 1.0 {
+                // Landscape: constrain width
+                imageWidth = maxDimension
+                imageHeight = maxDimension / imageAspectRatio
+            } else {
+                // Portrait or square: constrain height
+                imageHeight = maxDimension
+                imageWidth = maxDimension * imageAspectRatio
+            }
+            
+            imageX = (pageRect.width - imageWidth) / 2
+            
+            // Position image between address subtitle and metadata
+            // Address subtitle is drawn at: pageRect.height - (titleYFromTop + titleHeight + 20)
+            // In top-down terms, address subtitle top is at: titleYFromTop + titleHeight + 20 from top
+            // Image should be positioned 20 points below address subtitle (top-down)
+            let imageTopFromTop = titleYFromTop + titleHeight + 20 + 20  // Title + spacing + address + spacing
+            let imageTopYTopDown = imageTopFromTop
+            
+            // Metadata starts at: pageRect.height - (titleYFromTop + titleHeight + 660)
+            // In top-down terms: titleYFromTop + titleHeight + 660 from top
+            let metadataTopFromTop = titleYFromTop + titleHeight + 660
+            
+            // Ensure image doesn't overlap metadata - leave at least 30 points gap
+            let maxImageBottomFromTop = metadataTopFromTop - 30
+            let imageBottomFromTop = imageTopFromTop + imageHeight
+            
+            // If image would overlap metadata, shrink it
+            if imageBottomFromTop > maxImageBottomFromTop {
+                let availableHeight = maxImageBottomFromTop - imageTopFromTop
+                if availableHeight > 0 && availableHeight < imageHeight {
+                    imageHeight = availableHeight
+                    imageWidth = imageHeight * imageAspectRatio
+                    imageX = (pageRect.width - imageWidth) / 2
+                }
+            }
+            
+            // Convert to bottom-up coordinates for drawing
+            imageBottomY = pageRect.height - imageTopYTopDown - imageHeight
+        }
+        
+        // Draw image BEFORE metadata (due to backwards rendering, this makes it appear above metadata)
+        if let image = overheadImage {
+            let imageRect = CGRect(x: imageX, y: imageBottomY, width: imageWidth, height: imageHeight)
+            drawNSImage(image, in: imageRect, context: context)
+        }
+        
+        // 4. Draw metadata fields - positioned below image
         let metadataFont = NSFont.systemFont(ofSize: 11)
         let metadataLabelFont = NSFont.boldSystemFont(ofSize: 11)
         let metadataAttributes: [NSAttributedString.Key: Any] = [
@@ -1491,32 +1567,10 @@ struct FieldResultsPackage {
             .foregroundColor: NSColor.black
         ]
         
-        // Calculate starting Y position for metadata (right below title)
-        let metadataStartY = titleRect.maxY + 20  // 20 points below title
+        // Calculate metadata start position - use hacky but working 660 adjustment
+        // This works with backwards rendering - subtract large value to position metadata correctly
+        let metadataStartY = pageRect.height - (titleYFromTop + titleHeight + 660)  // Hacky but works with backwards rendering
         var currentY = metadataStartY
-        
-        // Calculate image dimensions and position (for later when image positioning is fixed)
-        var imageBottomY: CGFloat = 0
-        var imageHeight: CGFloat = 0
-        var imageX: CGFloat = 0
-        var imageWidth: CGFloat = 0
-        var imageTopYTopDown: CGFloat = 0
-        
-        // Calculate image size and position using the real image dimensions
-        if let image = overheadImage {
-            // 1. Force the image to be ~1/3 of the page tall
-            let targetHeight: CGFloat = pageRect.height / 3
-            imageWidth = targetHeight * (image.size.width / image.size.height)
-            imageX = (pageRect.width - imageWidth) / 2
-            
-            // 2. Position: below metadata (will be repositioned when image positioning is fixed)
-            imageTopYTopDown = currentY + 150  // Place below metadata for now
-            imageHeight = targetHeight
-            
-            // Calculate bottom-up Y coordinate for drawing
-            // In PDF (bottom-up), Y represents the bottom of the rectangle
-            imageBottomY = pageRect.height - imageTopYTopDown - imageHeight
-        }
         
         // Format date
         let dateFormatter = DateFormatter()
@@ -1525,44 +1579,38 @@ struct FieldResultsPackage {
         
         // Format owner name and address separately
         let ownerName = job.clientName ?? "Unknown"
-        // Use cleaned address if available, fallback to original
-        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
         let ownerAddress = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip)
         
-        // Draw metadata fields
-        "REPORT NUMBER:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
-        (job.jobId ?? "Unknown").draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
+        // Draw metadata fields - REVERSED ORDER due to backwards PDF rendering
+        // Draw in reverse order so they appear in correct order visually
+        // ADDRESS first in code (should render last/bottom)
+        "ADDRESS:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
+        ownerAddress.draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
         currentY += 25
         
-        "DATE OF INSPECTIONS:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
-        inspectionDateString.draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
-        currentY += 25
-        
-        "PREPARED FOR:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
-        (job.clientName ?? "Unknown").draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
-        currentY += 25
-        
-        "PREPARED BY:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
-        (job.inspectorName ?? "Unknown").draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
-        currentY += 25
-        
+        // OWNER NAME second in code (should render second from bottom)
         "OWNER NAME:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
         ownerName.draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
         currentY += 25
         
-        "ADDRESS:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
-        ownerAddress.draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
+        // PREPARED BY third in code (should render third from bottom)
+        "PREPARED BY:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
+        (job.inspectorName ?? "Unknown").draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
+        currentY += 25
         
-        // Now draw the real image in the calculated position below the metadata
-        if let image = overheadImage {
-            // Draw image using Core Graphics directly
-            let imageRect = CGRect(x: imageX,
-                                   y: imageBottomY,
-                                   width: imageWidth,
-                                   height: imageHeight)
-            
-            drawNSImage(image, in: imageRect, context: context)
-        }
+        // PREPARED FOR fourth in code (should render fourth from bottom)
+        "PREPARED FOR:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
+        (job.clientName ?? "Unknown").draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
+        currentY += 25
+        
+        // DATE OF INSPECTIONS fifth in code (should render second from top)
+        "DATE OF INSPECTIONS:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
+        inspectionDateString.draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
+        currentY += 25
+        
+        // REPORT NUMBER last in code (should render first/top)
+        "REPORT NUMBER:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
+        (job.jobId ?? "Unknown").draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
         
         // Footer at bottom
         let footerFont = NSFont.systemFont(ofSize: 10)
@@ -1571,7 +1619,6 @@ struct FieldResultsPackage {
             .foregroundColor: NSColor.gray
         ]
         
-        // Reuse addressToUse from above (already declared on line 1263)
         let address = "\(addressToUse), \(job.city ?? ""), \(job.state ?? "") \(job.zip ?? "")".uppercased()
         let footerY = pageRect.height - 50  // 50 points from bottom (top-down coordinates)
         address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
@@ -1596,15 +1643,16 @@ struct FieldResultsPackage {
     }
     
     private func drawEngineeringLetterPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
-        // Title at top - "ENGINEERING LETTER"
+        // Title at top - "ENGINEERING LETTER" - moved down ~50 points
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
             .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
+        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
         // Use backwards coordinate technique - bottom Y to render at top
-        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
+        let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "ENGINEERING LETTER".draw(in: titleRect, withAttributes: titleAttributes)
         
         var currentY = titleRect.maxY + 20
@@ -1775,15 +1823,16 @@ struct FieldResultsPackage {
     }
     
     private func drawWindowTestingSummaryPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job, windows: [Window]) {
-        // Title at top - "WINDOW TESTING"
+        // Title at top - "WINDOW TESTING" - moved down ~50 points
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
             .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
+        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
         // Use backwards coordinate technique - bottom Y to render at top
-        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
+        let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "WINDOW TESTING".draw(in: titleRect, withAttributes: titleAttributes)
         
         // Calculate box dimensions
@@ -2088,15 +2137,16 @@ struct FieldResultsPackage {
             }
         }
         
-        // Title at top - "SPECIMEN LOCATIONS"
+        // Title at top - "SPECIMEN LOCATIONS" - moved down ~50 points like overview
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
             .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
+        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
         // Use backwards coordinate technique - bottom Y to render at top
-        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
+        let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "SPECIMEN LOCATIONS".draw(in: titleRect, withAttributes: titleAttributes)
         
         // Draw legend above the image
@@ -2238,15 +2288,16 @@ struct FieldResultsPackage {
     }
     
     private func drawSummaryOfFindingsPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job, windows: [Window]) {
-        // Title at top - "SUMMARY OF FINDINGS"
+        // Title at top - "SUMMARY OF FINDINGS" - moved down ~50 points
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
             .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
+        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
         // Use backwards coordinate technique - bottom Y to render at top
-        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
+        let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "SUMMARY OF FINDINGS".draw(in: titleRect, withAttributes: titleAttributes)
         
         // Address below heading
@@ -2431,7 +2482,8 @@ struct FieldResultsPackage {
         let windowTitle = window.windowNumber ?? "Unknown"
         // Use backwards coordinate technique - bottom Y to render at top
         let titleHeight: CGFloat = 25
-        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
+        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
+        let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         windowTitle.draw(in: titleRect, withAttributes: titleAttributes)
         
         // Layout 4 photos in a 2x2 grid - position below title using top-down coordinates
@@ -2537,15 +2589,16 @@ struct FieldResultsPackage {
     }
     
     private func drawCalibrationPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
-        // Title at top - "CALIBRATED EQUIPMENT"
+        // Title at top - "CALIBRATED EQUIPMENT" - moved down ~50 points
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
             .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
+        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
         // Use backwards coordinate technique - bottom Y to render at top
-        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
+        let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "CALIBRATED EQUIPMENT".draw(in: titleRect, withAttributes: titleAttributes)
         
         var currentY = titleRect.maxY + 40
@@ -2666,15 +2719,16 @@ struct FieldResultsPackage {
     }
     
     private func drawWorksCitedPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
-        // Title at top - "SOURCES"
+        // Title at top - "SOURCES" - moved down ~50 points
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
             .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
+        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
         // Use backwards coordinate technique - bottom Y to render at top
-        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
+        let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "SOURCES".draw(in: titleRect, withAttributes: titleAttributes)
         
         var currentY = titleRect.maxY + 30
@@ -2725,15 +2779,16 @@ struct FieldResultsPackage {
     }
     
     private func drawCredentialsPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
-        // Title at top - "CREDENTIALS"
+        // Title at top - "CREDENTIALS" - moved down ~50 points
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
             .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
+        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
         // Use backwards coordinate technique - bottom Y to render at top
-        let titleRect = CGRect(x: 50, y: pageRect.height - 30 - titleHeight, width: pageRect.width - 100, height: titleHeight)
+        let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "CREDENTIALS".draw(in: titleRect, withAttributes: titleAttributes)
         
         var currentY = titleRect.maxY + 30
