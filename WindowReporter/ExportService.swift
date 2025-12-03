@@ -1567,9 +1567,10 @@ struct FieldResultsPackage {
             .foregroundColor: NSColor.black
         ]
         
-        // Calculate metadata start position - use hacky but working 660 adjustment
+        // Calculate metadata start position - use hacky but working adjustment
         // This works with backwards rendering - subtract large value to position metadata correctly
-        let metadataStartY = pageRect.height - (titleYFromTop + titleHeight + 660)  // Hacky but works with backwards rendering
+        // Reduced from 660 to 600 to move metadata up (make room for footer at bottom)
+        let metadataStartY = pageRect.height - (titleYFromTop + titleHeight + 600)  // Reduced to move metadata up
         var currentY = metadataStartY
         
         // Format date
@@ -1612,7 +1613,7 @@ struct FieldResultsPackage {
         "REPORT NUMBER:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
         (job.jobId ?? "Unknown").draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
         
-        // Footer at bottom
+        // Footer at bottom - use small Y value for backwards rendering (small Y = bottom of page)
         let footerFont = NSFont.systemFont(ofSize: 10)
         let footerAttributes: [NSAttributedString.Key: Any] = [
             .font: footerFont,
@@ -1620,7 +1621,7 @@ struct FieldResultsPackage {
         ]
         
         let address = "\(addressToUse), \(job.city ?? ""), \(job.state ?? "") \(job.zip ?? "")".uppercased()
-        let footerY = pageRect.height - 50  // 50 points from bottom (top-down coordinates)
+        let footerY: CGFloat = 50  // Small Y value = bottom of page (due to backwards rendering)
         address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         
         let pageText = "PAGE \(pageNumber) OF \(totalPages)"
@@ -1995,7 +1996,10 @@ struct FieldResultsPackage {
     }
     
     private func drawPurposeObservationsWeatherPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
-        var currentY: CGFloat = 50
+        // No title - this is a continuation page
+        // Start content from top with margin - moved up from 80 to 50
+        let contentStartYFromTop: CGFloat = 50  // Start 50 points from top (moved up)
+        var currentY = pageRect.height - contentStartYFromTop  // Convert to backwards coordinates
         
         // Body font for regular text
         let bodyFont = NSFont.systemFont(ofSize: 11)
@@ -2004,54 +2008,59 @@ struct FieldResultsPackage {
             .foregroundColor: NSColor.black
         ]
         
-        // Bold font for section headers
-        let headerFont = NSFont.boldSystemFont(ofSize: 11)
+        // Bold font for section headers - larger and bolder for prominence
+        let headerFont = NSFont.boldSystemFont(ofSize: 13)  // Increased from 11 to 13
         let headerAttributes: [NSAttributedString.Key: Any] = [
             .font: headerFont,
             .foregroundColor: NSColor.black
         ]
         
-        // Helper function to draw text with wrapping
+        // Helper function to draw text with wrapping - accounts for backwards rendering
         func drawWrappedText(_ text: String, attributes: [NSAttributedString.Key: Any], y: CGFloat, width: CGFloat) -> CGFloat {
-            let textRect = CGRect(x: 50, y: y, width: width, height: 0)
             let boundingRect = text.boundingRect(with: CGSize(width: width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attributes, context: nil)
-            text.draw(in: CGRect(x: 50, y: y, width: width, height: boundingRect.height), withAttributes: attributes)
-            return y + boundingRect.height
+            // Convert backwards Y to top-down for drawing
+            let topDownY = pageRect.height - y - boundingRect.height
+            text.draw(in: CGRect(x: 50, y: topDownY, width: width, height: boundingRect.height), withAttributes: attributes)
+            // Return new backwards Y (move down = subtract in backwards coordinates)
+            return y - boundingRect.height
         }
         
-        // PURPOSE Section
-        currentY = drawWrappedText("PURPOSE:", attributes: headerAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 8
-        let purposeText = "True Reports was hired by the insured to inspect the property for a damage claim. The date of loss (DOL) is indicated as October 9, 2024. The goal of this inspection was to provide a professional opinion on the cause, origin, extent, and repairability of reported and observed window damage."
-        currentY = drawWrappedText(purposeText, attributes: bodyAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 20
-        
-        // OBSERVATIONS Section
-        currentY = drawWrappedText("OBSERVATIONS:", attributes: headerAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 8
-        let observationsText = "Observations are presented within this report. Property condition is described in photograph captions and elsewhere. Full-resolution images are retained electronically and can be provided upon request."
-        currentY = drawWrappedText(observationsText, attributes: bodyAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 20
-        
-        // WEATHER HISTORY Section
+        // REVERSED ORDER due to backwards PDF rendering - draw in reverse so they appear correctly
+        // WEATHER HISTORY first in code (should render last/bottom)
         currentY = drawWrappedText("WEATHER HISTORY:", attributes: headerAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 8
-        let weatherHistoryText = "The home was directly in the path of Hurricane Milton. The wind gusts in the area were recorded at over 170 mph on October 9, 2024. NOAA reports sustained winds of between 61 and 91mph."
-        // Draw text with superscript
+        currentY -= 8  // Move down = subtract in backwards coordinates
+        // Create attributed string with superscript to handle wrapping properly (like WindowTest)
         let weatherText = "The home was directly in the path of Hurricane Milton. The wind gusts in the area were recorded at over 170 mph on October 9, 2024. NOAA reports sustained winds of between 61 and 91mph"
-        let weatherTextSize = weatherText.size(withAttributes: bodyAttributes)
-        weatherText.draw(at: CGPoint(x: 50, y: currentY), withAttributes: bodyAttributes)
-        
-        // Draw superscript "2"
+        let attributedWeatherText = NSMutableAttributedString(string: weatherText, attributes: bodyAttributes)
+        // Add superscript "2" at the end
         let superscriptFont = NSFont.systemFont(ofSize: 8)
         let superscriptAttributes: [NSAttributedString.Key: Any] = [
             .font: superscriptFont,
             .foregroundColor: NSColor.black,
             .baselineOffset: 5
         ]
-        let superscriptSize = "2".size(withAttributes: superscriptAttributes)
-        "2".draw(at: CGPoint(x: 50 + weatherTextSize.width, y: currentY - 3), withAttributes: superscriptAttributes)
-        currentY += weatherTextSize.height + 20
+        let superscript2 = NSAttributedString(string: "2", attributes: superscriptAttributes)
+        attributedWeatherText.append(superscript2)
+        // Draw wrapped text with superscript - convert backwards Y to top-down for drawing
+        let textWidth = pageRect.width - 100
+        let boundingRect = attributedWeatherText.boundingRect(with: CGSize(width: textWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+        let weatherTextTopDownY = pageRect.height - currentY - boundingRect.height
+        attributedWeatherText.draw(in: CGRect(x: 50, y: weatherTextTopDownY, width: textWidth, height: boundingRect.height))
+        currentY -= (boundingRect.height + 30)  // Increased spacing between sections (was 20)
+        
+        // OBSERVATIONS second in code (should render middle)
+        currentY = drawWrappedText("OBSERVATIONS:", attributes: headerAttributes, y: currentY, width: pageRect.width - 100)
+        currentY -= 8  // Move down = subtract in backwards coordinates
+        let observationsText = "Observations are presented within this report. Property condition is described in photograph captions and elsewhere. Full-resolution images are retained electronically and can be provided upon request."
+        currentY = drawWrappedText(observationsText, attributes: bodyAttributes, y: currentY, width: pageRect.width - 100)
+        currentY -= 30  // Increased spacing between sections (was 20)
+        
+        // PURPOSE last in code (should render first/top)
+        currentY = drawWrappedText("PURPOSE:", attributes: headerAttributes, y: currentY, width: pageRect.width - 100)
+        currentY -= 8  // Move down = subtract in backwards coordinates
+        let purposeText = "True Reports was hired by the insured to inspect the property for a damage claim. The date of loss (DOL) is indicated as October 9, 2024. The goal of this inspection was to provide a professional opinion on the cause, origin, extent, and repairability of reported and observed window damage."
+        currentY = drawWrappedText(purposeText, attributes: bodyAttributes, y: currentY, width: pageRect.width - 100)
+        currentY -= 20  // Final spacing
         
         // Load and draw Hurricane Milton image
         var hurricaneImage: NSImage?
@@ -2066,7 +2075,7 @@ struct FieldResultsPackage {
         }
         
         if let image = hurricaneImage {
-            currentY += 10
+            currentY -= 10  // Move down = subtract in backwards coordinates
             // 2 inches margin on each side = 144 points each = 288 points total
             // Page width is 612 points (8.5 inches), so image width = 612 - 288 = 324 points (4.5 inches)
             let maxWidth: CGFloat = 324
@@ -2076,10 +2085,12 @@ struct FieldResultsPackage {
             
             // Center the image
             let imageX = (pageRect.width - imageWidth) / 2
-            // Convert top-down Y to bottom-up Y for CGContext drawing
-            let imageRectBottomUp = CGRect(x: imageX, y: pageRect.height - currentY - imageHeight, width: imageWidth, height: imageHeight)
+            // Convert backwards Y to bottom-up Y for CGContext drawing
+            // currentY is backwards (large = top), convert to bottom-up
+            let imageTopYTopDown = pageRect.height - currentY
+            let imageRectBottomUp = CGRect(x: imageX, y: pageRect.height - imageTopYTopDown - imageHeight, width: imageWidth, height: imageHeight)
             drawNSImage(image, in: imageRectBottomUp, context: context)
-            currentY += imageHeight + 15  // Reduced spacing to fit both images
+            currentY -= (imageHeight + 15)  // Move down = subtract in backwards coordinates
         }
         
         // Load and draw wide map image
@@ -2102,12 +2113,13 @@ struct FieldResultsPackage {
             
             // Center the image
             let imageX = (pageRect.width - imageWidth) / 2
-            // Convert top-down Y to bottom-up Y for CGContext drawing
-            let imageRectBottomUp = CGRect(x: imageX, y: pageRect.height - currentY - imageHeight, width: imageWidth, height: imageHeight)
+            // Convert backwards Y to bottom-up Y for CGContext drawing
+            let imageTopYTopDown = pageRect.height - currentY
+            let imageRectBottomUp = CGRect(x: imageX, y: pageRect.height - imageTopYTopDown - imageHeight, width: imageWidth, height: imageHeight)
             drawNSImage(image, in: imageRectBottomUp, context: context)
         }
         
-        // Footer at bottom
+        // Footer at bottom - use small Y value for backwards rendering (small Y = bottom of page)
         let footerFont = NSFont.systemFont(ofSize: 10)
         let footerAttributes: [NSAttributedString.Key: Any] = [
             .font: footerFont,
@@ -2117,7 +2129,7 @@ struct FieldResultsPackage {
         // Use cleaned address if available, fallback to original
         let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
         let address = "\(addressToUse), \(job.city ?? ""), \(job.state ?? "") \(job.zip ?? "")".uppercased()
-        let footerY = pageRect.height - 50
+        let footerY: CGFloat = 50  // Small Y value = bottom of page (due to backwards rendering)
         address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         
         let pageText = "PAGE \(pageNumber) OF \(totalPages)"
@@ -2652,7 +2664,7 @@ struct FieldResultsPackage {
                 .font: descriptionFont,
                 .foregroundColor: NSColor.black
             ]
-            let descriptionText = "Verifying pressure of equipment before AAMA 501.2 water test which simulates real rain conditions."
+            let descriptionText = "Verifying pressure of equipment before ASTM E331 water test which simulates real rain conditions."
             let descriptionRect = CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: 40)
             descriptionText.draw(in: descriptionRect, withAttributes: descriptionAttributes)
             currentY = descriptionRect.maxY + 40
@@ -4090,7 +4102,7 @@ fileprivate final class DocxTemplateRenderer {
                     body += xmlImageParagraph(relId: gaugeRef.relId, docPrId: gaugeRef.docPrId, cx: gaugeResource.cx, cy: gaugeResource.cy, alignment: "center")
                     body += xmlSpacerParagraph(before: 120, after: 120, centered: true)
                     body += xmlParagraph("Location: Onsite", style: "Normal")
-                    body += xmlParagraph("Verifying pressure of equipment before AAMA 501.2 water test which simulates real rain conditions.", style: "Normal")
+                    body += xmlParagraph("Verifying pressure of equipment before ASTM E331 water test which simulates real rain conditions.", style: "Normal")
                     body += xmlSpacerParagraph(before: 240, after: 240)
                 }
             }
