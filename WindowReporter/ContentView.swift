@@ -370,7 +370,7 @@ struct StatusBadge: View {
             return .green
         case "Fail":
             return .red
-        case "Inaccessible":
+        case "Inaccessible", "Not Tested":
             return .gray
         case "Pending":
             return .blue
