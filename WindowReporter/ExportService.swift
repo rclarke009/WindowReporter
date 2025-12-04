@@ -2040,7 +2040,7 @@ struct FieldResultsPackage {
         currentY = drawWrappedText("WEATHER HISTORY:", attributes: headerAttributes, y: currentY, width: pageRect.width - 100)
         currentY -= 8  // Move down = subtract in backwards coordinates
         // Create attributed string with superscript to handle wrapping properly (like WindowTest)
-        let weatherText = "The home was directly in the path of Hurricane Milton. The wind gusts in the area were recorded at over 170 mph on October 9, 2024. NOAA reports sustained winds of between 61 and 91mph"
+        let weatherText = "The home is located in the path of Hurricane Milton. The wind gusts in the area were recorded at over 170 mph on October 9, 2024. NOAA reports sustained winds of between 61 and 91mph"
         let attributedWeatherText = NSMutableAttributedString(string: weatherText, attributes: bodyAttributes)
         // Add superscript "2" at the end
         let superscriptFont = NSFont.systemFont(ofSize: 8)
@@ -2764,7 +2764,7 @@ struct FieldResultsPackage {
         currentY += citation1BoundingRect.height + 20
         
         // Second citation (NOAA) - hanging indent
-        let citation2 = "2 Beven, John L., II, et al. National Hurricane Center Tropical Cyclone Report: Hurricane Milton (AL142024). National Hurricane Center, 31 Mar. 2025, https://www.nhc.noaa.gov/data/tcr/AL142024_Milton.pdf."
+        let citation2 = "2 Beven, J. L., II, et al. National Hurricane Center Tropical Cyclone Report: Hurricane Milton (AL142024). National Hurricane Center, 31 Mar. 2025, https://www.nhc.noaa.gov/data/tcr/AL142024_Milton.pdf."
         let citation2Rect = CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: 100)
         let citation2BoundingRect = citation2.boundingRect(with: CGSize(width: citation2Rect.width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: citationAttributes, context: nil)
         citation2.draw(in: CGRect(x: 50, y: currentY, width: citation2Rect.width, height: citation2BoundingRect.height), withAttributes: citationAttributes)
@@ -5053,9 +5053,12 @@ fileprivate final class DocxTemplateRenderer {
         let citation1 = "1 Federal Emergency Management Agency. \"Cyclical Wind Pressures in Hurricanes.\" Home Builder's Guide to Coastal Construction Technical Fact Sheet Series, no. 1.3, Dec. 2018, www.fema.gov/sites/default/files/2020-07/fema_p499_fact_sheet_1-3_cyclical_wind_pressures.pdf."
         xml += xmlParagraph(citation1, spacingBefore: 0, spacingAfter: 240)
         
-        // Second citation (NOAA) - no indent, left aligned
-        let citation2 = "2 Beven, John L., II, et al. National Hurricane Center Tropical Cyclone Report: Hurricane Milton (AL142024). National Hurricane Center, 31 Mar. 2025, https://www.nhc.noaa.gov/data/tcr/AL142024_Milton.pdf."
-        xml += xmlParagraph(citation2, spacingBefore: 0, spacingAfter: 0)
+        // Second citation (NOAA) - no indent, left aligned, with line break before URL
+        let citation2Text = "2 Beven, John L., II, et al. National Hurricane Center Tropical Cyclone Report: Hurricane Milton (AL142024). National Hurricane Center, 31 Mar. 2025, "
+        let citation2URL = "https://www.nhc.noaa.gov/data/tcr/AL142024_Milton.pdf."
+        // Create custom XML with line break before URL
+        let rPr = "<w:rFonts w:ascii=\"Graphik\" w:hAnsi=\"Graphik\" w:eastAsia=\"Graphik\" w:cstheme=\"minorHAnsi\"/>"
+        xml += "<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\"/></w:pPr><w:r><w:rPr>\(rPr)</w:rPr><w:t xml:space=\"preserve\">\(citation2Text.xmlEscaped)</w:t></w:r><w:r><w:br/></w:r><w:r><w:rPr>\(rPr)</w:rPr><w:t xml:space=\"preserve\">\(citation2URL.xmlEscaped)</w:t></w:r></w:p>"
         
         return xml
     }
