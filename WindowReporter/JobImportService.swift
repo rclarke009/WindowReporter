@@ -206,20 +206,17 @@ class JobImportService: ObservableObject {
             }
             
             // Check for JSON files (with and without "private" prefix, like iPad version)
-            let fullJobPackageURL = tempDirectory.appendingPathComponent("full_job_package.json")
-            let privateFullJobPackageURL = tempDirectory.appendingPathComponent("privatefull_job_package.json")
+            let fullJobPackageURL = tempDirectory.appendingPathComponent("full-job-package.json")
+            let privateFullJobPackageURL = tempDirectory.appendingPathComponent("privatefull-job-package.json")
             let jobsJSONURL = tempDirectory.appendingPathComponent("jobs.json")
-            let privateJobsJSONURL = tempDirectory.appendingPathComponent("privatejobs.json")
             
             print("🔍 Checking for JSON files:")
-            print("   full_job_package.json at: \(fullJobPackageURL.path)")
+            print("   full-job-package.json at: \(fullJobPackageURL.path)")
             print("   exists: \(FileManager.default.fileExists(atPath: fullJobPackageURL.path))")
-            print("   privatefull_job_package.json at: \(privateFullJobPackageURL.path)")
+            print("   privatefull-job-package.json at: \(privateFullJobPackageURL.path)")
             print("   exists: \(FileManager.default.fileExists(atPath: privateFullJobPackageURL.path))")
             print("   jobs.json at: \(jobsJSONURL.path)")
             print("   exists: \(FileManager.default.fileExists(atPath: jobsJSONURL.path))")
-            print("   privatejobs.json at: \(privateJobsJSONURL.path)")
-            print("   exists: \(FileManager.default.fileExists(atPath: privateJobsJSONURL.path))")
             
             // List all files in tempDirectory for debugging
             if let contents = try? FileManager.default.contentsOfDirectory(at: tempDirectory, includingPropertiesForKeys: nil) {
@@ -241,7 +238,7 @@ class JobImportService: ObservableObject {
                     self.importedJobs = [importedJob]
                     NotificationCenter.default.post(name: .newJobCreated, object: importedJob)
                 }
-            } else if FileManager.default.fileExists(atPath: jobsJSONURL.path) || FileManager.default.fileExists(atPath: privateJobsJSONURL.path) {
+            } else if FileManager.default.fileExists(atPath: jobsJSONURL.path) {
                 await MainActor.run {
                     detectedPackageType = .jobIntake
                     importProgress = 0.3
@@ -312,17 +309,15 @@ class JobImportService: ObservableObject {
         do {
             let contents = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey])
             
-            // Check current directory for JSON files (with and without "private" prefix)
-            let fullJobJSON = directory.appendingPathComponent("full_job_package.json")
-            let privateFullJobJSON = directory.appendingPathComponent("privatefull_job_package.json")
+            // Check current directory for JSON files
+            let fullJobJSON = directory.appendingPathComponent("full-job-package.json")
+            let privateFullJobJSON = directory.appendingPathComponent("privatefull-job-package.json")
             let jobsJSON = directory.appendingPathComponent("jobs.json")
-            let privateJobsJSON = directory.appendingPathComponent("privatejobs.json")
             
             // Check for JSON files
             if FileManager.default.fileExists(atPath: fullJobJSON.path) ||
                FileManager.default.fileExists(atPath: privateFullJobJSON.path) ||
-               FileManager.default.fileExists(atPath: jobsJSON.path) ||
-               FileManager.default.fileExists(atPath: privateJobsJSON.path) {
+               FileManager.default.fileExists(atPath: jobsJSON.path) {
                 print("✅ Found JSON directory at depth \(currentDepth): \(directory.path)")
                 return directory
             }
@@ -345,14 +340,7 @@ class JobImportService: ObservableObject {
     
     private func parseJobsJSON(from directory: URL) async throws -> JobIntakePackage {
         // Check for JSON file with or without "private" prefix (like iPad version)
-        var jobsJSONURL = directory.appendingPathComponent("jobs.json")
-        if !FileManager.default.fileExists(atPath: jobsJSONURL.path) {
-            let privateJobsJSONURL = directory.appendingPathComponent("privatejobs.json")
-            if FileManager.default.fileExists(atPath: privateJobsJSONURL.path) {
-                jobsJSONURL = privateJobsJSONURL
-                print("✅ Using jobs.json with 'private' prefix")
-            }
-        }
+        let jobsJSONURL = directory.appendingPathComponent("jobs.json")
         
         print("🔍 Looking for jobs.json at: \(jobsJSONURL.path)")
         
@@ -467,26 +455,27 @@ class JobImportService: ObservableObject {
     
     private func importFullJobPackage(from directory: URL) async throws -> Job {
         // Check for JSON file with or without "private" prefix (like iPad version)
-        var packageURL = directory.appendingPathComponent("full_job_package.json")
+        // Check for JSON file (with or without iOS "private" prefix)
+        var packageURL = directory.appendingPathComponent("full-job-package.json")
         if !FileManager.default.fileExists(atPath: packageURL.path) {
-            let privatePackageURL = directory.appendingPathComponent("privatefull_job_package.json")
-            if FileManager.default.fileExists(atPath: privatePackageURL.path) {
-                packageURL = privatePackageURL
-                print("✅ Using full_job_package.json with 'private' prefix")
+            let privateURL = directory.appendingPathComponent("privatefull-job-package.json")
+            if FileManager.default.fileExists(atPath: privateURL.path) {
+                packageURL = privateURL
+                print("✅ Using full-job-package.json with iOS 'private' prefix")
             }
         }
         
-        print("🔍 Looking for full_job_package.json at: \(packageURL.path)")
+        print("🔍 Looking for full-job-package.json at: \(packageURL.path)")
         
         guard FileManager.default.fileExists(atPath: packageURL.path) else {
-            print("❌ full_job_package.json not found")
+            print("❌ full-job-package.json not found (checked both with and without 'private' prefix)")
             throw ImportError.missingFullJobPackage
         }
         
-        print("✅ Found full_job_package.json, reading data...")
+        print("✅ Found full-job-package.json, reading data...")
         
         let data = try Data(contentsOf: packageURL)
-        print("📄 Read \(data.count) bytes from full_job_package.json")
+        print("📄 Read \(data.count) bytes from full-job-package.json")
         
         let decoder = JSONDecoder()
         let package: FullJobPackage
@@ -664,8 +653,18 @@ class JobImportService: ObservableObject {
             sourceURL = directPath
             print("📷 Found overhead image at direct path: \(directPath.path)")
         } else {
-            // Try 2: If path includes overhead/, check privateoverhead/ directory
+            // Try 2: If path includes overhead/, check overhead/ directory
             if imageFilePath.contains("overhead/") {
+                let filename = (imageFilePath as NSString).lastPathComponent
+                let overheadPath = directory.appendingPathComponent("overhead").appendingPathComponent(filename)
+                if FileManager.default.fileExists(atPath: overheadPath.path) {
+                    sourceURL = overheadPath
+                    print("📷 Found overhead image in overhead/: \(overheadPath.path)")
+                }
+            }
+            
+            // Try 3: Check for iOS "private" prefix on overhead/
+            if sourceURL == nil {
                 let filename = (imageFilePath as NSString).lastPathComponent
                 let privateOverheadPath = directory.appendingPathComponent("privateoverhead").appendingPathComponent(filename)
                 if FileManager.default.fileExists(atPath: privateOverheadPath.path) {
@@ -674,31 +673,50 @@ class JobImportService: ObservableObject {
                 }
             }
             
-            // Try 3: Extract filename from path and look in privateoverhead
+            // Try 4: Extract filename from path and look in overhead
             if sourceURL == nil {
                 let filename = (imageFilePath as NSString).lastPathComponent
-                let privateOverheadPath = directory.appendingPathComponent("privateoverhead").appendingPathComponent(filename)
-                if FileManager.default.fileExists(atPath: privateOverheadPath.path) {
-                    sourceURL = privateOverheadPath
-                    print("📷 Found overhead image by filename in privateoverhead: \(privateOverheadPath.path)")
+                let overheadPath = directory.appendingPathComponent("overhead").appendingPathComponent(filename)
+                if FileManager.default.fileExists(atPath: overheadPath.path) {
+                    sourceURL = overheadPath
+                    print("📷 Found overhead image by filename in overhead: \(overheadPath.path)")
                 }
             }
             
-            // Try 4: If path already includes privatemap/, use it as-is (for map images)
-            if sourceURL == nil && imageFilePath.contains("privatemap/") {
-                let pathWithPrivate = directory.appendingPathComponent(imageFilePath)
+            // Try 5: If path already includes map/, use it as-is (for map images)
+            if sourceURL == nil && imageFilePath.contains("map/") {
+                let pathWithMap = directory.appendingPathComponent(imageFilePath)
+                if FileManager.default.fileExists(atPath: pathWithMap.path) {
+                    sourceURL = pathWithMap
+                    print("📷 Found overhead image at path with map/: \(pathWithMap.path)")
+                }
+            }
+            
+            // Try 6: Check for iOS "private" prefix on map/
+            if sourceURL == nil && imageFilePath.contains("map/") {
+                let privatePath = imageFilePath.replacingOccurrences(of: "map/", with: "privatemap/")
+                let pathWithPrivate = directory.appendingPathComponent(privatePath)
                 if FileManager.default.fileExists(atPath: pathWithPrivate.path) {
                     sourceURL = pathWithPrivate
                     print("📷 Found overhead image at path with privatemap/: \(pathWithPrivate.path)")
                 }
             }
             
-            // Try 5: Add privatemap/ prefix
+            // Try 7: Add map/ prefix
             if sourceURL == nil {
-                let privatePath = directory.appendingPathComponent("privatemap").appendingPathComponent(imageFilePath)
-                if FileManager.default.fileExists(atPath: privatePath.path) {
-                    sourceURL = privatePath
-                    print("📷 Found overhead image at privatemap path: \(privatePath.path)")
+                let mapPath = directory.appendingPathComponent("map").appendingPathComponent(imageFilePath)
+                if FileManager.default.fileExists(atPath: mapPath.path) {
+                    sourceURL = mapPath
+                    print("📷 Found overhead image at map path: \(mapPath.path)")
+                }
+            }
+            
+            // Try 8: Add privatemap/ prefix (iOS adds "private" prefix)
+            if sourceURL == nil {
+                let privateMapPath = directory.appendingPathComponent("privatemap").appendingPathComponent(imageFilePath)
+                if FileManager.default.fileExists(atPath: privateMapPath.path) {
+                    sourceURL = privateMapPath
+                    print("📷 Found overhead image at privatemap path: \(privateMapPath.path)")
                 }
             }
         }
@@ -737,25 +755,54 @@ class JobImportService: ObservableObject {
             sourceURL = directPath
             print("📷 Found wide map image at direct path: \(directPath.path)")
         } else {
-            // Try 2: If path already includes privatemap/, use it as-is
-            if imageFilePath.contains("privatemap/") {
-                let pathWithPrivate = directory.appendingPathComponent(imageFilePath)
+            // Try 2: If path already includes map/, use it as-is
+            if imageFilePath.contains("map/") {
+                let pathWithMap = directory.appendingPathComponent(imageFilePath)
+                if FileManager.default.fileExists(atPath: pathWithMap.path) {
+                    sourceURL = pathWithMap
+                    print("📷 Found wide map image at path with map/: \(pathWithMap.path)")
+                }
+            }
+            
+            // Try 3: Check for iOS "private" prefix on map/
+            if sourceURL == nil && imageFilePath.contains("map/") {
+                let privatePath = imageFilePath.replacingOccurrences(of: "map/", with: "privatemap/")
+                let pathWithPrivate = directory.appendingPathComponent(privatePath)
                 if FileManager.default.fileExists(atPath: pathWithPrivate.path) {
                     sourceURL = pathWithPrivate
                     print("📷 Found wide map image at path with privatemap/: \(pathWithPrivate.path)")
                 }
             }
             
-            // Try 3: Add privatemap/ prefix
+            // Try 4: Add map/ prefix
             if sourceURL == nil {
-                let privatePath = directory.appendingPathComponent("privatemap").appendingPathComponent(imageFilePath)
-                if FileManager.default.fileExists(atPath: privatePath.path) {
-                    sourceURL = privatePath
-                    print("📷 Found wide map image at privatemap path: \(privatePath.path)")
+                let mapPath = directory.appendingPathComponent("map").appendingPathComponent(imageFilePath)
+                if FileManager.default.fileExists(atPath: mapPath.path) {
+                    sourceURL = mapPath
+                    print("📷 Found wide map image at map path: \(mapPath.path)")
                 }
             }
             
-            // Try 4: Extract filename from path and look in privatemap
+            // Try 5: Add privatemap/ prefix (iOS adds "private" prefix)
+            if sourceURL == nil {
+                let privateMapPath = directory.appendingPathComponent("privatemap").appendingPathComponent(imageFilePath)
+                if FileManager.default.fileExists(atPath: privateMapPath.path) {
+                    sourceURL = privateMapPath
+                    print("📷 Found wide map image at privatemap path: \(privateMapPath.path)")
+                }
+            }
+            
+            // Try 6: Extract filename from path and look in map
+            if sourceURL == nil {
+                let filename = (imageFilePath as NSString).lastPathComponent
+                let filenamePath = directory.appendingPathComponent("map").appendingPathComponent(filename)
+                if FileManager.default.fileExists(atPath: filenamePath.path) {
+                    sourceURL = filenamePath
+                    print("📷 Found wide map image by filename in map: \(filenamePath.path)")
+                }
+            }
+            
+            // Try 7: Extract filename from path and look in privatemap (iOS prefix)
             if sourceURL == nil {
                 let filename = (imageFilePath as NSString).lastPathComponent
                 let filenamePath = directory.appendingPathComponent("privatemap").appendingPathComponent(filename)
@@ -800,7 +847,7 @@ class JobImportService: ObservableObject {
             sourceURL = directPath
             print("📷 Found front of home image at direct path: \(directPath.path)")
         } else {
-            // Try 2: If path includes images/, check images/ directory directly (export format)
+            // Try 2: If path includes images/, check images/ directory directly
             if imageFilePath.contains("images/") {
                 let pathWithImages = directory.appendingPathComponent(imageFilePath)
                 if FileManager.default.fileExists(atPath: pathWithImages.path) {
@@ -809,7 +856,17 @@ class JobImportService: ObservableObject {
                 }
             }
             
-            // Try 3: Extract filename from path and look in images/ directory (export format)
+            // Try 3: Check for iOS "private" prefix on images/
+            if sourceURL == nil && imageFilePath.contains("images/") {
+                let privatePath = imageFilePath.replacingOccurrences(of: "images/", with: "privateimages/")
+                let pathWithPrivate = directory.appendingPathComponent(privatePath)
+                if FileManager.default.fileExists(atPath: pathWithPrivate.path) {
+                    sourceURL = pathWithPrivate
+                    print("📷 Found front of home image at privateimages/ path: \(pathWithPrivate.path)")
+                }
+            }
+            
+            // Try 4: Extract filename from path and look in images/ directory
             if sourceURL == nil {
                 let filename = (imageFilePath as NSString).lastPathComponent
                 let imagesPath = directory.appendingPathComponent("images").appendingPathComponent(filename)
@@ -819,10 +876,20 @@ class JobImportService: ObservableObject {
                 }
             }
             
-            // Try 4: Check other possible directories (fallback)
+            // Try 5: Extract filename from path and look in privateimages/ (iOS prefix)
             if sourceURL == nil {
                 let filename = (imageFilePath as NSString).lastPathComponent
-                let possibleDirs = ["privateimages", "front_of_home_images", "privatefront_of_home"]
+                let privateImagesPath = directory.appendingPathComponent("privateimages").appendingPathComponent(filename)
+                if FileManager.default.fileExists(atPath: privateImagesPath.path) {
+                    sourceURL = privateImagesPath
+                    print("📷 Found front of home image by filename in privateimages/: \(privateImagesPath.path)")
+                }
+            }
+            
+            // Try 6: Check other possible directories (fallback)
+            if sourceURL == nil {
+                let filename = (imageFilePath as NSString).lastPathComponent
+                let possibleDirs = ["images", "privateimages", "front_of_home_images"]
                 for dir in possibleDirs {
                     let testPath = directory.appendingPathComponent(dir).appendingPathComponent(filename)
                     if FileManager.default.fileExists(atPath: testPath.path) {
@@ -868,7 +935,7 @@ class JobImportService: ObservableObject {
             sourceURL = directPath
             print("📷 Found gauge image at direct path: \(directPath.path)")
         } else {
-            // Try 2: If path includes images/, check images/ directory directly (export format)
+            // Try 2: If path includes images/, check images/ directory directly
             if imageFilePath.contains("images/") {
                 let pathWithImages = directory.appendingPathComponent(imageFilePath)
                 if FileManager.default.fileExists(atPath: pathWithImages.path) {
@@ -877,7 +944,17 @@ class JobImportService: ObservableObject {
                 }
             }
             
-            // Try 3: Extract filename from path and look in images/ directory (export format)
+            // Try 3: Check for iOS "private" prefix on images/
+            if sourceURL == nil && imageFilePath.contains("images/") {
+                let privatePath = imageFilePath.replacingOccurrences(of: "images/", with: "privateimages/")
+                let pathWithPrivate = directory.appendingPathComponent(privatePath)
+                if FileManager.default.fileExists(atPath: pathWithPrivate.path) {
+                    sourceURL = pathWithPrivate
+                    print("📷 Found gauge image at privateimages/ path: \(pathWithPrivate.path)")
+                }
+            }
+            
+            // Try 4: Extract filename from path and look in images/ directory
             if sourceURL == nil {
                 let filename = (imageFilePath as NSString).lastPathComponent
                 let imagesPath = directory.appendingPathComponent("images").appendingPathComponent(filename)
@@ -887,10 +964,20 @@ class JobImportService: ObservableObject {
                 }
             }
             
-            // Try 4: Check other possible directories (fallback)
+            // Try 5: Extract filename from path and look in privateimages/ (iOS prefix)
             if sourceURL == nil {
                 let filename = (imageFilePath as NSString).lastPathComponent
-                let possibleDirs = ["privateimages", "gauge_images", "privategauge"]
+                let privateImagesPath = directory.appendingPathComponent("privateimages").appendingPathComponent(filename)
+                if FileManager.default.fileExists(atPath: privateImagesPath.path) {
+                    sourceURL = privateImagesPath
+                    print("📷 Found gauge image by filename in privateimages/: \(privateImagesPath.path)")
+                }
+            }
+            
+            // Try 6: Check other possible directories (fallback)
+            if sourceURL == nil {
+                let filename = (imageFilePath as NSString).lastPathComponent
+                let possibleDirs = ["images", "privateimages", "gauge_images"]
                 for dir in possibleDirs {
                     let testPath = directory.appendingPathComponent(dir).appendingPathComponent(filename)
                     if FileManager.default.fileExists(atPath: testPath.path) {
@@ -938,21 +1025,22 @@ class JobImportService: ObservableObject {
             sourceURL = directPath
             print("📷 Found photo at direct path: \(directPath.path)")
         } else {
-            // Try 2: If path already includes privatephotos/, use it as-is
-            if imageFilePath.contains("privatephotos/") {
-                let pathWithPrivate = directory.appendingPathComponent(imageFilePath)
-                if FileManager.default.fileExists(atPath: pathWithPrivate.path) {
-                    sourceURL = pathWithPrivate
-                    print("📷 Found photo at path with privatephotos/: \(pathWithPrivate.path)")
+            // Try 2: If path already includes photos/, use it as-is
+            if imageFilePath.contains("photos/") {
+                let pathWithPhotos = directory.appendingPathComponent(imageFilePath)
+                if FileManager.default.fileExists(atPath: pathWithPhotos.path) {
+                    sourceURL = pathWithPhotos
+                    print("📷 Found photo at path with photos/: \(pathWithPhotos.path)")
                 }
             }
             
-            // Try 3: Add privatephotos/ prefix
-            if sourceURL == nil {
-                let privatePath = directory.appendingPathComponent("privatephotos").appendingPathComponent(imageFilePath)
-                if FileManager.default.fileExists(atPath: privatePath.path) {
-                    sourceURL = privatePath
-                    print("📷 Found photo at privatephotos path: \(privatePath.path)")
+            // Try 3: Check for iOS "private" prefix on photos/
+            if sourceURL == nil && imageFilePath.contains("photos/") {
+                let privatePath = imageFilePath.replacingOccurrences(of: "photos/", with: "privatephotos/")
+                let pathWithPrivate = directory.appendingPathComponent(privatePath)
+                if FileManager.default.fileExists(atPath: pathWithPrivate.path) {
+                    sourceURL = pathWithPrivate
+                    print("📷 Found photo at path with privatephotos/: \(pathWithPrivate.path)")
                 }
             }
             
@@ -965,7 +1053,26 @@ class JobImportService: ObservableObject {
                 }
             }
             
-            // Try 5: Extract filename from path and look in privatephotos
+            // Try 5: Add privatephotos/ prefix (iOS adds "private" prefix)
+            if sourceURL == nil {
+                let privatePhotosPath = directory.appendingPathComponent("privatephotos").appendingPathComponent(imageFilePath)
+                if FileManager.default.fileExists(atPath: privatePhotosPath.path) {
+                    sourceURL = privatePhotosPath
+                    print("📷 Found photo at privatephotos path: \(privatePhotosPath.path)")
+                }
+            }
+            
+            // Try 6: Extract filename from path and look in photos
+            if sourceURL == nil {
+                let filename = (imageFilePath as NSString).lastPathComponent
+                let filenamePath = directory.appendingPathComponent("photos").appendingPathComponent(filename)
+                if FileManager.default.fileExists(atPath: filenamePath.path) {
+                    sourceURL = filenamePath
+                    print("📷 Found photo by filename in photos: \(filenamePath.path)")
+                }
+            }
+            
+            // Try 7: Extract filename from path and look in privatephotos (iOS prefix)
             if sourceURL == nil {
                 let filename = (imageFilePath as NSString).lastPathComponent
                 let filenamePath = directory.appendingPathComponent("privatephotos").appendingPathComponent(filename)
@@ -1029,7 +1136,7 @@ enum ImportError: LocalizedError {
         case .unableToAccessFile:
             return "Unable to access the selected file"
         case .missingJobsJSON:
-            return "The ZIP file doesn't contain a jobs.json or full_job_package.json file"
+            return "The ZIP file doesn't contain a jobs.json or full-job-package.json file"
         case .invalidJSONFormat:
             return "The JSON file has an invalid format"
         case .imageProcessingFailed:
@@ -1037,9 +1144,9 @@ enum ImportError: LocalizedError {
         case .photoImportFailed:
             return "Failed to import photos"
         case .missingFullJobPackage:
-            return "The package doesn't contain a full_job_package.json file"
+            return "The package doesn't contain a full-job-package.json file"
         case .invalidFullJobPackageFormat:
-            return "The full_job_package.json file has an invalid format"
+            return "The full-job-package.json file has an invalid format"
         }
     }
 }

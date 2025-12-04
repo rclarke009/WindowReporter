@@ -358,7 +358,7 @@ struct WindowRowView: View {
                             .font(.headline)
                         Spacer()
                         if window.isInaccessible {
-                            StatusBadge(status: "Inaccessible")
+                            StatusBadge(status: "Not Tested")
                         } else if let testResult = window.testResult {
                             StatusBadge(status: testResult)
                         } else {

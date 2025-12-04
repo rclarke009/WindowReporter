@@ -87,7 +87,7 @@ struct WindowEditorView: View {
                     }
                     .pickerStyle(SegmentedPickerStyle())
                     
-                    Toggle("Inaccessible", isOn: $isInaccessible)
+                    Toggle("Not Tested", isOn: $isInaccessible)
                     
                     Stepper("Leak Points: \(leakPoints)", value: $leakPoints, in: 0...100)
                 }

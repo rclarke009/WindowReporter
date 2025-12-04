@@ -74,9 +74,8 @@ struct FieldResultsPackage {
         try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
         
         let addressNameId = generateAddressNameIdentifier(for: job)
-        let city = job.city ?? "Unknown"
         let dateString = DateFormatter.exportDate.string(from: Date())
-        let packageName = "\(addressNameId)_WindowTest_FieldReport_\(city)_\(dateString)"
+        let packageName = "\(addressNameId)-\(dateString)"
         
         print("📦 Creating package: \(packageName)")
         
@@ -162,43 +161,50 @@ struct FieldResultsPackage {
     }
     
     private func sanitizeFilenameComponent(_ value: String) -> String {
-        let sanitized = value.replacingOccurrences(of: "[^A-Za-z0-9_-]", with: "_", options: .regularExpression)
-        let trimmed = sanitized.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        let sanitized = value.replacingOccurrences(of: "[^A-Za-z0-9-]", with: "-", options: .regularExpression)
+        let trimmed = sanitized.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         return trimmed.isEmpty ? "Report" : trimmed
     }
     
-    /// Generate a sanitized address-name identifier for use in filenames
-    private func generateAddressNameIdentifier(for job: Job) -> String {
+    /// Generate a simple address identifier for PDF filenames
+    /// Returns first 12 characters of address (sanitized) without suffix
+    private func generateSimpleAddressIdentifier(for job: Job) -> String {
         let address = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
-        let clientName = job.clientName ?? ""
         
-        var components: [String] = []
+        // Take first 12 characters of address
+        let addressPrefix = String(address.prefix(12))
+        let sanitizedAddress = sanitizeFilenameComponent(addressPrefix)
         
-        // Sanitize and add address if available
-        if !address.isEmpty {
-            let sanitizedAddress = sanitizeFilenameComponent(address)
-            if !sanitizedAddress.isEmpty {
-                components.append(sanitizedAddress)
-            }
-        }
-        
-        // Sanitize and add client name if available
-        if !clientName.isEmpty {
-            let sanitizedName = sanitizeFilenameComponent(clientName)
-            if !sanitizedName.isEmpty {
-                components.append(sanitizedName)
-            }
-        }
-        
-        // If we have components, join them; otherwise use a fallback
-        if !components.isEmpty {
-            return components.joined(separator: "_")
+        if !sanitizedAddress.isEmpty {
+            return sanitizedAddress
         } else {
             // Fallback to city if available, otherwise "Unknown"
             if let city = job.city, !city.isEmpty {
-                return sanitizeFilenameComponent(city)
+                let sanitizedCity = sanitizeFilenameComponent(city)
+                return sanitizedCity.isEmpty ? "Unknown" : sanitizedCity
             }
             return "Unknown"
+        }
+    }
+    
+    /// Generate a sanitized address-name identifier for use in filenames
+    /// Returns first 12 characters of address + "full export"
+    private func generateAddressNameIdentifier(for job: Job) -> String {
+        let address = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+        
+        // Take first 12 characters of address
+        let addressPrefix = String(address.prefix(12))
+        let sanitizedAddress = sanitizeFilenameComponent(addressPrefix)
+        
+        if !sanitizedAddress.isEmpty {
+            return "\(sanitizedAddress)-full-export"
+        } else {
+            // Fallback to city if available, otherwise "Unknown"
+            if let city = job.city, !city.isEmpty {
+                let sanitizedCity = sanitizeFilenameComponent(city)
+                return sanitizedCity.isEmpty ? "Unknown-full-export" : "\(sanitizedCity)-full-export"
+            }
+            return "Unknown-full-export"
         }
     }
     
@@ -219,7 +225,7 @@ struct FieldResultsPackage {
     /// Get the display test result for a window, checking isInaccessible first
     private func getDisplayTestResult(for window: Window) -> String {
         if window.isInaccessible {
-            return "Inaccessible"
+            return "Not Tested"
         }
         return window.testResult ?? "Pending"
     }
@@ -239,7 +245,7 @@ struct FieldResultsPackage {
             field: FieldData(
                 inspector: job.inspectorName ?? "Unknown",
                 date: job.inspectionDate ?? Date(),
-                overheadFile: "overhead_with_dots.png",
+                overheadFile: "overhead-with-dots.png",
                 windows: windows.map { window in
                     WindowExportData(
                         windowId: window.windowId ?? "",
@@ -358,7 +364,7 @@ struct FieldResultsPackage {
             print("⚠️ Could not convert image to PNG")
             return
         }
-        let outputURL = directory.appendingPathComponent("overhead_with_dots.png")
+        let outputURL = directory.appendingPathComponent("overhead-with-dots.png")
         try pngData.write(to: outputURL)
     }
     
@@ -405,7 +411,7 @@ struct FieldResultsPackage {
             photoManifest += "  Leak Photos: \(leakPhotos.count)\n\n"
         }
         
-        let manifestURL = photosDirectory.appendingPathComponent("photo_manifest.txt")
+        let manifestURL = photosDirectory.appendingPathComponent("photo-manifest.txt")
         try photoManifest.write(to: manifestURL, atomically: true, encoding: .utf8)
         
         print("📸 Photo export completed. Check logs above for any skipped photos.")
@@ -562,7 +568,7 @@ struct FieldResultsPackage {
         
         let baseName = generateAddressNameIdentifier(for: job)
         let timestamp = DateFormatter.exportDate.string(from: Date())
-        let finalURL = reportsRoot.appendingPathComponent("\(baseName)_Report_\(timestamp).docx")
+        let finalURL = reportsRoot.appendingPathComponent("\(baseName)-Report-\(timestamp).docx")
         
         try FileManager.default.removeItemIfExists(at: finalURL)
         try FileManager.default.copyItem(at: temporaryDocURL, to: finalURL)
@@ -845,10 +851,9 @@ struct FieldResultsPackage {
         let exportDirectory = documentsDirectory.appendingPathComponent("exports")
         try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
         
-        let addressNameId = generateAddressNameIdentifier(for: job)
-        let city = job.city ?? "Unknown"
+        let addressNameId = generateSimpleAddressIdentifier(for: job)
         let dateString = DateFormatter.exportDate.string(from: Date())
-        let fileName = "\(addressNameId)_\(city)_\(dateString).pdf"
+        let fileName = "\(addressNameId)-\(dateString).pdf"
         
         let pdfData = try await generatePDFReport()
         let pdfURL = exportDirectory.appendingPathComponent(fileName)
@@ -958,8 +963,13 @@ struct FieldResultsPackage {
     let waterPressure = job.waterPressure > 0 ? job.waterPressure : 12.0
     let recapText = "The entire specimen was sprayed with water at a rate of 7.2 (Gal/Hr./Sq. Ft.) at \(Int(waterPressure)) PSI.\n"
     let displayResult = getDisplayTestResult(for: window)
-    let resultText = (displayResult == "Pass" ? "No water leakage was observed following the test." : displayResult == "Fail" ? "Water leakage was observed following the test." : displayResult == "Inaccessible" ? "Window is inaccessible." : "Test result is pending.")
-    let fullRecap = recapText + resultText
+    let resultText = (displayResult == "Pass" ? "No water leakage was observed following the test." : displayResult == "Fail" ? "Water leakage was observed following the test." : displayResult == "Not Tested" ? "Window was not tested." : "Test result is pending.")
+    var fullRecap = recapText + resultText
+    
+    // Add untested reason if window was not tested (using optional chaining for backward compatibility)
+    if window.isInaccessible, let reason = window.value(forKey: "untestedReason") as? String, !reason.isEmpty {
+        fullRecap += "\nReason: \(reason)"
+    }
     let textRect = CGRect(x: 60, y: currentY, width: pageRect.width - 120, height: 100)
     fullRecap.draw(in: textRect, withAttributes: recapAttributes)
     
@@ -2176,7 +2186,7 @@ struct FieldResultsPackage {
         let legendItems: [(NSColor, String)] = [
             (.green, "Pass"),
             (.red, "Fail"),
-            (.gray, "Inaccessible")
+            (.gray, "Not Tested")
         ]
         
         // Calculate total width of legend items
@@ -2429,23 +2439,10 @@ struct FieldResultsPackage {
         recommendationsPara1.draw(in: CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: recPara1Rect.height), withAttributes: bodyAttributes)
         currentY += recPara1Rect.height + 12
         
-        // Recommendations paragraph 2 (about inaccessible windows)
+        // Recommendations paragraph 2 (about untested windows)
         if inaccessibleWindows.count > 0 {
-            let inaccessibleTypes = inaccessibleWindows.compactMap { window -> String? in
-                guard let windowType = window.windowType, !windowType.isEmpty else { return nil }
-                return windowType.lowercased()
-            }
-            let uniqueTypes = Array(Set(inaccessibleTypes))
-            let typeDescription: String
-            if uniqueTypes.count == 1 {
-                typeDescription = uniqueTypes[0] + " window"
-            } else if uniqueTypes.count > 1 {
-                typeDescription = uniqueTypes.dropLast().joined(separator: ", ") + ", and " + uniqueTypes.last! + " windows"
-            } else {
-                typeDescription = "window"
-            }
-            
-            let recommendationsPara2 = "\(inaccessibleWindows.count) \(typeDescription)\(inaccessibleWindows.count == 1 ? "" : "s") could not be tested due to inaccessibility."
+            let windowCount = inaccessibleWindows.count
+            let recommendationsPara2 = "We were unable to test \(windowCount) window\(windowCount == 1 ? "" : "s"). Please see details below."
             let recPara2Rect = recommendationsPara2.boundingRect(with: CGSize(width: pageRect.width - 100, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: bodyAttributes, context: nil)
             recommendationsPara2.draw(in: CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: recPara2Rect.height), withAttributes: bodyAttributes)
             currentY += recPara2Rect.height + 12
@@ -2568,8 +2565,8 @@ struct FieldResultsPackage {
                 .foregroundColor: NSColor.black
             ]
             let caption = photoData.caption
-            // Only push captions down on pages with 2 photos; keep original position for 4-photo pages
-            let captionOffset: CGFloat = photos.count == 2 ? 77 : 5
+            // Consistent caption positioning for all photo counts
+            let captionOffset: CGFloat = 5
             let captionY = photoYTopDown + photoSize + captionOffset
             let captionRect = CGRect(x: x, y: captionY, width: photoSize, height: 20)
             caption.draw(in: captionRect, withAttributes: captionAttributes)
@@ -3147,7 +3144,7 @@ struct FieldResultsPackage {
     }
 
     private func loadOverviewResources(from directory: URL) -> (DocxImageResource?, DocxImageResource?, DocxImageResource?) {
-        let dottedURL = directory.appendingPathComponent("overhead_with_dots.png")
+        let dottedURL = directory.appendingPathComponent("overhead-with-dots.png")
         guard let dottedData = try? Data(contentsOf: dottedURL),
               let dottedImage = NSImage(data: dottedData),
               dottedImage.size.width > 0 else {
@@ -3303,8 +3300,12 @@ struct FieldResultsPackage {
             lines.append(DocxSummaryLine(text: "No water leakage was observed following the test.", spacingBefore: 0, spacingAfter: tightSpacing))
         } else if testResult.caseInsensitiveCompare("Fail") == .orderedSame {
             lines.append(DocxSummaryLine(text: "Water leakage was observed following the test.", spacingBefore: 0, spacingAfter: tightSpacing))
-        } else if testResult.caseInsensitiveCompare("Inaccessible") == .orderedSame {
-            lines.append(DocxSummaryLine(text: "Window is inaccessible.", spacingBefore: 0, spacingAfter: tightSpacing))
+        } else if testResult.caseInsensitiveCompare("Not Tested") == .orderedSame || window.isInaccessible {
+            lines.append(DocxSummaryLine(text: "Window was not tested.", spacingBefore: 0, spacingAfter: tightSpacing))
+            // Add reason if available (using optional chaining for backward compatibility)
+            if let reason = window.value(forKey: "untestedReason") as? String, !reason.isEmpty {
+                lines.append(DocxSummaryLine(text: "Reason: \(reason)", spacingBefore: 0, spacingAfter: tightSpacing))
+            }
         } else {
             lines.append(DocxSummaryLine(text: "Test result is pending.", spacingBefore: 0, spacingAfter: tightSpacing))
         }
@@ -3398,43 +3399,29 @@ class FullJobPackageExporter {
     }
     
     /// Generate a sanitized address-name identifier for use in filenames
+    /// Returns first 12 characters of address + "full export"
     private func generateAddressNameIdentifier(for job: Job) -> String {
         let address = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
-        let clientName = job.clientName ?? ""
         
-        var components: [String] = []
+        // Take first 12 characters of address
+        let addressPrefix = String(address.prefix(12))
+        let sanitizedAddress = sanitizeFilenameComponent(addressPrefix)
         
-        // Sanitize and add address if available
-        if !address.isEmpty {
-            let sanitizedAddress = sanitizeFilenameComponent(address)
-            if !sanitizedAddress.isEmpty {
-                components.append(sanitizedAddress)
-            }
-        }
-        
-        // Sanitize and add client name if available
-        if !clientName.isEmpty {
-            let sanitizedName = sanitizeFilenameComponent(clientName)
-            if !sanitizedName.isEmpty {
-                components.append(sanitizedName)
-            }
-        }
-        
-        // If we have components, join them; otherwise use a fallback
-        if !components.isEmpty {
-            return components.joined(separator: "_")
+        if !sanitizedAddress.isEmpty {
+            return "\(sanitizedAddress)-full-export"
         } else {
             // Fallback to city if available, otherwise "Unknown"
             if let city = job.city, !city.isEmpty {
-                return sanitizeFilenameComponent(city)
+                let sanitizedCity = sanitizeFilenameComponent(city)
+                return sanitizedCity.isEmpty ? "Unknown-full-export" : "\(sanitizedCity)-full-export"
             }
-            return "Unknown"
+            return "Unknown-full-export"
         }
     }
     
     private func sanitizeFilenameComponent(_ value: String) -> String {
-        let sanitized = value.replacingOccurrences(of: "[^A-Za-z0-9_-]", with: "_", options: .regularExpression)
-        let trimmed = sanitized.trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        let sanitized = value.replacingOccurrences(of: "[^A-Za-z0-9-]", with: "-", options: .regularExpression)
+        let trimmed = sanitized.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         return trimmed.isEmpty ? "Report" : trimmed
     }
     
@@ -3443,9 +3430,9 @@ class FullJobPackageExporter {
         
         let addressNameId = generateAddressNameIdentifier(for: job)
         let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
+        dateFormatter.dateFormat = "yyyyMMdd-HHmmss"
         let timestamp = dateFormatter.string(from: Date())
-        let packageName = "\(addressNameId)_WindowTest_FullJob_\(timestamp)"
+        let packageName = "\(addressNameId)-\(timestamp)"
         
         let exportDirectory = documentsDirectory.appendingPathComponent("exports")
         try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
@@ -3473,7 +3460,7 @@ class FullJobPackageExporter {
         if let overheadPath = job.overheadImagePath {
             let sourceURL = documentsDirectory.appendingPathComponent("overhead_images").appendingPathComponent(overheadPath)
             if FileManager.default.fileExists(atPath: sourceURL.path) {
-                let destFileName = "\(addressNameId)_overhead.jpg"
+                let destFileName = "\(addressNameId)-overhead.jpg"
                 let destURL = overheadDir.appendingPathComponent(destFileName)
                 try FileManager.default.copyItem(at: sourceURL, to: destURL)
                 overheadImageFile = "overhead/\(destFileName)"
@@ -3484,7 +3471,7 @@ class FullJobPackageExporter {
         if let mapPath = job.wideMapImagePath {
             let sourceURL = documentsDirectory.appendingPathComponent("map_images").appendingPathComponent(mapPath)
             if FileManager.default.fileExists(atPath: sourceURL.path) {
-                let destFileName = "\(addressNameId)_location_map.png"
+                let destFileName = "\(addressNameId)-location-map.png"
                 let destURL = mapDir.appendingPathComponent(destFileName)
                 try FileManager.default.copyItem(at: sourceURL, to: destURL)
                 wideMapImageFile = "map/\(destFileName)"
@@ -3495,7 +3482,7 @@ class FullJobPackageExporter {
         if let frontPath = job.frontOfHomeImagePath {
             let sourceURL = documentsDirectory.appendingPathComponent("front_of_home_images").appendingPathComponent(frontPath)
             if FileManager.default.fileExists(atPath: sourceURL.path) {
-                let destFileName = "front_of_home.jpg"
+                let destFileName = "front-of-home.jpg"
                 let destURL = imagesDir.appendingPathComponent(destFileName)
                 try FileManager.default.copyItem(at: sourceURL, to: destURL)
                 frontOfHomeImageFile = "images/\(destFileName)"
@@ -3548,7 +3535,7 @@ class FullJobPackageExporter {
                 
                 // Save photo to package
                 let photoType = photo.photoType ?? "Unknown"
-                let photoFileName = "\(windowId)_\(photoType)_\(index).jpg"
+                let photoFileName = "\(windowId)-\(photoType)-\(index).jpg"
                 let photoURL = photosDir.appendingPathComponent(photoFileName)
                 try imageData.write(to: photoURL)
                 
@@ -3634,7 +3621,7 @@ class FullJobPackageExporter {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .prettyPrinted
         let jsonData = try encoder.encode(package)
-        let jsonURL = packageDirectory.appendingPathComponent("full_job_package.json")
+        let jsonURL = packageDirectory.appendingPathComponent("full-job-package.json")
         try jsonData.write(to: jsonURL)
         
         print("✅ Full Job Package JSON created")
@@ -4996,23 +4983,10 @@ fileprivate final class DocxTemplateRenderer {
         }
         xml += xmlParagraph(recommendationsPara1, spacingBefore: 0, spacingAfter: 120)
         
-        // Recommendations paragraph 2 (about inaccessible windows)
+        // Recommendations paragraph 2 (about untested windows)
         if inaccessibleWindows.count > 0 {
-            let inaccessibleTypes = inaccessibleWindows.compactMap { window -> String? in
-                guard let windowType = window.windowType, !windowType.isEmpty else { return nil }
-                return windowType.lowercased()
-            }
-            let uniqueTypes = Array(Set(inaccessibleTypes))
-            let typeDescription: String
-            if uniqueTypes.count == 1 {
-                typeDescription = uniqueTypes[0] + " window"
-            } else if uniqueTypes.count > 1 {
-                typeDescription = uniqueTypes.dropLast().joined(separator: ", ") + ", and " + uniqueTypes.last! + " windows"
-            } else {
-                typeDescription = "window"
-            }
-            
-            let recommendationsPara2 = "\(inaccessibleWindows.count) \(typeDescription)\(inaccessibleWindows.count == 1 ? "" : "s") could not be tested due to inaccessibility."
+            let windowCount = inaccessibleWindows.count
+            let recommendationsPara2 = "We were unable to test \(windowCount) window\(windowCount == 1 ? "" : "s"). Please see details below."
             xml += xmlParagraph(recommendationsPara2, spacingBefore: 0, spacingAfter: 0)
         }
         
@@ -5153,7 +5127,7 @@ fileprivate final class DocxTemplateRenderer {
         let legendItems: [(String, String)] = [
             ("00FF00", "Pass"),      // Green
             ("FF0000", "Fail"),      // Red
-            ("808080", "Inaccessible") // Gray
+            ("808080", "Not Tested") // Gray
         ]
         
         // Create a table with 3 columns for the legend items
@@ -5319,7 +5293,7 @@ fileprivate final class DocxTemplateRenderer {
     
     private func getDisplayTestResult(for window: Window) -> String {
         if window.isInaccessible {
-            return "Inaccessible"
+            return "Not Tested"
         }
         return window.testResult ?? "Pending"
     }
