@@ -25,6 +25,7 @@ struct WindowEditorView: View {
     @State private var heightString: String
     @State private var showingPhotoPicker: PhotoType?
     @State private var activePhotoGallery: PhotoType?
+    @State private var activeLargePhotoGallery: PhotoType?
     
     private let materialOptions = ["Aluminum", "Metal", "Vinyl", "Wood", "Unknown"]
     
@@ -42,8 +43,41 @@ struct WindowEditorView: View {
     }
     
     private var photos: [Photo] {
-        guard let photosSet = window.photos else { return [] }
-        return (photosSet.allObjects as? [Photo] ?? []).sorted { ($0.createdAt ?? Date.distantPast) > ($1.createdAt ?? Date.distantPast) }
+        guard let photosSet = window.photos else {
+            print("MYDEBUG → WindowEditorView - window.photos is nil")
+            return []
+        }
+        let allPhotos = (photosSet.allObjects as? [Photo] ?? [])
+        print("MYDEBUG → WindowEditorView - Found \(allPhotos.count) photos for window \(window.windowNumber ?? "nil")")
+        for photo in allPhotos {
+            print("MYDEBUG →   Photo: ID=\(photo.photoId ?? "nil"), Type=\(photo.photoType ?? "nil"), Created=\(photo.createdAt?.description ?? "nil")")
+        }
+        return allPhotos.sorted { ($0.createdAt ?? Date.distantPast) > ($1.createdAt ?? Date.distantPast) }
+    }
+    
+    // Helper function to get base photo type for filtering
+    private func getBasePhotoType(for photoTypeString: String?) -> PhotoType {
+        guard let photoTypeString = photoTypeString else { return .exterior }
+        if let photoType = PhotoType(rawValue: photoTypeString) {
+            // Map specific types to base categories
+            switch photoType {
+            case .exterior, .exteriorWideView, .exteriorPhotos, .aama:
+                return .exterior
+            case .interior, .interiorWideView, .interiorCloseup:
+                return .interior
+            case .leak, .leakCloseups:
+                return .leak
+            }
+        }
+        return .exterior
+    }
+    
+    // Helper function to filter photos by base type
+    private func photos(for baseType: PhotoType) -> [Photo] {
+        return photos.filter { photo in
+            let baseTypeForPhoto = getBasePhotoType(for: photo.photoType)
+            return baseTypeForPhoto == baseType
+        }
     }
     
     var body: some View {
@@ -119,10 +153,42 @@ struct WindowEditorView: View {
                             .buttonStyle(PlainButtonStyle())
                         }
                     }
-                    
-                    // Photo galleries by type
+                }
+                
+                // Photo Galleries - Visual buttons
+                Section("Photo Galleries") {
                     ForEach([PhotoType.exterior, PhotoType.interior, PhotoType.leak], id: \.self) { photoType in
+                        let typePhotos = photos(for: photoType)
+                        PhotoGalleryButtonRow(
+                            photoType: photoType,
+                            photoCount: typePhotos.count,
+                            onGridTap: {
+                                activePhotoGallery = photoType
+                            },
+                            onLargeTap: {
+                                activeLargePhotoGallery = photoType
+                            }
+                        )
+                    }
+                }
+                .onAppear {
+                    print("MYDEBUG → WindowEditorView - Photo Galleries section appeared")
+                    print("MYDEBUG → Total photos: \(photos.count)")
+                    for photoType in PhotoType.allCases {
                         let typePhotos = photos.filter { $0.photoType == photoType.rawValue }
+                        print("MYDEBUG → \(photoType.rawValue) photos: \(typePhotos.count)")
+                    }
+                    // Also log by base categories
+                    print("MYDEBUG → Base categories:")
+                    print("MYDEBUG →   Exterior (base): \(photos(for: .exterior).count)")
+                    print("MYDEBUG →   Interior (base): \(photos(for: .interior).count)")
+                    print("MYDEBUG →   Leak (base): \(photos(for: .leak).count)")
+                }
+                
+                Section("Photo Thumbnails") {
+                    // Photo galleries by type (thumbnail preview)
+                    ForEach([PhotoType.exterior, PhotoType.interior, PhotoType.leak], id: \.self) { photoType in
+                        let typePhotos = photos(for: photoType)
                         if !typePhotos.isEmpty {
                             DisclosureGroup("\(photoType.rawValue.capitalized) Photos (\(typePhotos.count))") {
                                 ScrollView(.horizontal, showsIndicators: true) {
@@ -188,6 +254,14 @@ struct WindowEditorView: View {
                     set: { if !$0 { showingPhotoPicker = nil } }
                 ))
             }
+            .sheet(item: $activePhotoGallery) { photoType in
+                PhotoGalleryView(window: window, photoType: photoType)
+                    .frame(width: 1000, height: 800)
+            }
+            .sheet(item: $activeLargePhotoGallery) { photoType in
+                PhotoLargeGalleryView(window: window, photoType: photoType)
+                    .frame(width: 800, height: 600)
+            }
         }
     }
     
@@ -215,6 +289,91 @@ struct WindowEditorView: View {
             dismiss()
         } catch {
             print("Failed to save window: \(error)")
+        }
+    }
+}
+
+struct PhotoGalleryButtonRow: View {
+    let photoType: PhotoType
+    let photoCount: Int
+    let onGridTap: () -> Void
+    let onLargeTap: () -> Void
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            // Icon
+            Image(systemName: photoType.icon)
+                .font(.title2)
+                .foregroundColor(photoType.color)
+                .frame(width: 30)
+            
+            // Photo type name
+            Text("\(photoType.rawValue) Photos")
+                .font(.body)
+                .fontWeight(.medium)
+            
+            Spacer()
+            
+            // Photo count badge
+            HStack(spacing: 4) {
+                Text("\(photoCount)")
+                    .font(.caption)
+                    .fontWeight(.medium)
+                Image(systemName: "photo.fill")
+                    .font(.caption)
+            }
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.blue.opacity(0.1))
+            .cornerRadius(8)
+            
+            // Grid View button
+            Button(action: {
+                print("MYDEBUG → PhotoGalleryButtonRow - Grid button tapped for \(photoType.rawValue)")
+                onGridTap()
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "square.grid.3x3")
+                        .font(.caption)
+                    Text("Grid")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                }
+                .foregroundColor(photoCount > 0 ? .white : .gray)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(photoCount > 0 ? photoType.color : Color.gray.opacity(0.3))
+                .cornerRadius(6)
+            }
+            .buttonStyle(PlainButtonStyle())
+            .disabled(photoCount == 0)
+            
+            // Large View button
+            Button(action: {
+                print("MYDEBUG → PhotoGalleryButtonRow - Large button tapped for \(photoType.rawValue)")
+                onLargeTap()
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "rectangle.stack")
+                        .font(.caption)
+                    Text("Large")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                }
+                .foregroundColor(photoCount > 0 ? .white : .gray)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(photoCount > 0 ? photoType.color.opacity(0.8) : Color.gray.opacity(0.3))
+                .cornerRadius(6)
+            }
+            .buttonStyle(PlainButtonStyle())
+            .disabled(photoCount == 0)
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 4)
+        .onAppear {
+            print("MYDEBUG → PhotoGalleryButtonRow appeared for \(photoType.rawValue) with \(photoCount) photos")
         }
     }
 }

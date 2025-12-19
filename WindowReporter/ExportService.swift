@@ -225,7 +225,7 @@ struct FieldResultsPackage {
     /// Get the display test result for a window, checking isInaccessible first
     private func getDisplayTestResult(for window: Window) -> String {
         if window.isInaccessible {
-            return "Not Tested"
+            return "Unable to Test"
         }
         return window.testResult ?? "Pending"
     }
@@ -963,7 +963,7 @@ struct FieldResultsPackage {
     let waterPressure = job.waterPressure > 0 ? job.waterPressure : 12.0
     let recapText = "The entire specimen was sprayed with water at a rate of 7.2 (Gal/Hr./Sq. Ft.) at \(Int(waterPressure)) PSI.\n"
     let displayResult = getDisplayTestResult(for: window)
-    let resultText = (displayResult == "Pass" ? "No water leakage was observed following the test." : displayResult == "Fail" ? "Water leakage was observed following the test." : displayResult == "Not Tested" ? "Window was not tested." : "Test result is pending.")
+    let resultText = (displayResult == "Pass" ? "No water leakage was observed following the test." : displayResult == "Fail" ? "Water leakage was observed following the test." : displayResult == "Unable to Test" ? "Window was not tested." : "Test result is pending.")
     var fullRecap = recapText + resultText
     
     // Add untested reason if window was not tested (using optional chaining for backward compatibility)
@@ -984,7 +984,7 @@ struct FieldResultsPackage {
     let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
     let footerY = pageRect.height - 50
     address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-    let pageText = "PAGE \(pageNumber) OF \(totalPages)"
+    let pageText = "Page \(pageNumber) of \(totalPages)"
     let pageTextSize = pageText.size(withAttributes: footerAttributes)
     pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
 }
@@ -1117,7 +1117,7 @@ struct FieldResultsPackage {
     //     let footerY = pageRect.height - 50  // 50 points from bottom
     //     address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         
-    //     let pageText = "PAGE \(pageNumber) OF \(totalPages)"
+    //     let pageText = "Page \(pageNumber) of \(totalPages)"
     //     let pageTextSize = pageText.size(withAttributes: footerAttributes)
     //     pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
     // }
@@ -1342,7 +1342,7 @@ struct FieldResultsPackage {
         currentY += 18
         
         let windSpeed = job.windSpeed > 0 ? job.windSpeed : 5.0
-        drawLabelValue(label: "Wind Speed/Direction (mph):", value: String(format: "%.0f Mph", windSpeed), y: currentY)
+        drawLabelValue(label: "Wind Speed/Direction (mph):", value: String(format: "%.0f mph", windSpeed), y: currentY)
         currentY += 18
         
         // Combine Barometric Pressure and Precipitation on same line
@@ -1588,8 +1588,6 @@ struct FieldResultsPackage {
         dateFormatter.dateFormat = "MMM d, yyyy"
         let inspectionDateString = job.inspectionDate != nil ? dateFormatter.string(from: job.inspectionDate!) : "N/A"
         
-        // Format owner name and address separately
-        let ownerName = job.clientName ?? "Unknown"
         let ownerAddress = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip)
         
         // Draw metadata fields - REVERSED ORDER due to backwards PDF rendering
@@ -1597,11 +1595,6 @@ struct FieldResultsPackage {
         // ADDRESS first in code (should render last/bottom)
         "ADDRESS:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
         ownerAddress.draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
-        currentY += 25
-        
-        // OWNER NAME second in code (should render second from bottom)
-        "OWNER NAME:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
-        ownerName.draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
         currentY += 25
         
         // PREPARED BY third in code (should render third from bottom)
@@ -1634,7 +1627,7 @@ struct FieldResultsPackage {
         let footerY: CGFloat = 50  // Small Y value = bottom of page (due to backwards rendering)
         address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         
-        let pageText = "PAGE \(pageNumber) OF \(totalPages)"
+        let pageText = "Page \(pageNumber) of \(totalPages)"
         let pageTextSize = pageText.size(withAttributes: footerAttributes)
         pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
     }
@@ -1813,7 +1806,7 @@ struct FieldResultsPackage {
             address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         }
         
-        let pageText = "PAGE \(pageNumber) OF \(totalPages)"
+        let pageText = "Page \(pageNumber) of \(totalPages)"
         let pageTextSize = pageText.size(withAttributes: footerAttributes)
         pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
     }
@@ -2040,7 +2033,7 @@ struct FieldResultsPackage {
         currentY = drawWrappedText("WEATHER HISTORY:", attributes: headerAttributes, y: currentY, width: pageRect.width - 100)
         currentY -= 8  // Move down = subtract in backwards coordinates
         // Create attributed string with superscript to handle wrapping properly (like WindowTest)
-        let weatherText = "The home is located in the path of Hurricane Milton. The wind gusts in the area were recorded at over 170 mph on October 9, 2024. NOAA reports sustained winds of between 61 and 91mph"
+        let weatherText = "The home is located in the path of Hurricane Milton. The wind gusts in the area were recorded at over 170 mph on October 9, 2024. NOAA reports sustained winds of between 61 and 91 mph"
         let attributedWeatherText = NSMutableAttributedString(string: weatherText, attributes: bodyAttributes)
         // Add superscript "2" at the end
         let superscriptFont = NSFont.systemFont(ofSize: 8)
@@ -2142,7 +2135,7 @@ struct FieldResultsPackage {
         let footerY: CGFloat = 50  // Small Y value = bottom of page (due to backwards rendering)
         address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         
-        let pageText = "PAGE \(pageNumber) OF \(totalPages)"
+        let pageText = "Page \(pageNumber) of \(totalPages)"
         let pageTextSize = pageText.size(withAttributes: footerAttributes)
         pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
     }
@@ -2304,7 +2297,7 @@ struct FieldResultsPackage {
         let footerY = pageRect.height - 50  // 50 points from bottom (top-down coordinates)
         address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         
-        let pageText = "PAGE \(pageNumber) OF \(totalPages)"
+        let pageText = "Page \(pageNumber) of \(totalPages)"
         let pageTextSize = pageText.size(withAttributes: footerAttributes)
         pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
     }
@@ -2478,7 +2471,7 @@ struct FieldResultsPackage {
         let footerY = pageRect.height - 50  // 50 points from bottom (top-down coordinates)
         address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         
-        let pageText = "PAGE \(pageNumber) OF \(totalPages)"
+        let pageText = "Page \(pageNumber) of \(totalPages)"
         let pageTextSize = pageText.size(withAttributes: footerAttributes)
         pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
         
@@ -2722,7 +2715,7 @@ struct FieldResultsPackage {
         let footerY = pageRect.height - 50  // 50 points from bottom (top-down coordinates)
         address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         
-        let pageText = "PAGE \(pageNumber) OF \(totalPages)"
+        let pageText = "Page \(pageNumber) of \(totalPages)"
         let pageTextSize = pageText.size(withAttributes: footerAttributes)
         pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
     }
@@ -2782,7 +2775,7 @@ struct FieldResultsPackage {
         let footerY = pageRect.height - 50  // 50 points from bottom (top-down coordinates)
         address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         
-        let pageText = "PAGE \(pageNumber) OF \(totalPages)"
+        let pageText = "Page \(pageNumber) of \(totalPages)"
         let pageTextSize = pageText.size(withAttributes: footerAttributes)
         pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
     }
@@ -2896,7 +2889,7 @@ struct FieldResultsPackage {
         let footerY = pageRect.height - 50  // 50 points from bottom (top-down coordinates)
         address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         
-        let pageText = "PAGE \(pageNumber) OF \(totalPages)"
+        let pageText = "Page \(pageNumber) of \(totalPages)"
         let pageTextSize = pageText.size(withAttributes: footerAttributes)
         pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
     }
@@ -3295,12 +3288,24 @@ struct FieldResultsPackage {
 
         // Recap
         lines.append(DocxSummaryLine(text: "Test Recap and Comments:", spacingBefore: 0, spacingAfter: tightSpacing))
-        lines.append(DocxSummaryLine(text: String(format: "The entire specimen was sprayed with water at a rate of 7.2 (Gal/Hr./Sq. Ft.) at %.0f PSI.", waterPressure), spacingBefore: 0, spacingAfter: tightSpacing))
+        
+        // Use window.notes if available, otherwise fall back to generating the text from water pressure (for backward compatibility)
+        // Skip fallback for "Not Tested" windows to prevent duplicate text
+        if let notes = window.notes?.trimmingCharacters(in: .whitespacesAndNewlines), !notes.isEmpty {
+            lines.append(DocxSummaryLine(text: notes, spacingBefore: 0, spacingAfter: tightSpacing))
+        } else if window.isInaccessible {
+            // For "Not Tested" windows, don't use fallback to avoid duplicate text
+            // Skip adding notes line entirely
+        } else {
+            // Fallback for backward compatibility with existing data
+            lines.append(DocxSummaryLine(text: String(format: "The entire specimen was sprayed with water at a rate of 7.2 (Gal/Hr./Sq. Ft.) at %.0f PSI.", waterPressure), spacingBefore: 0, spacingAfter: tightSpacing))
+        }
+        
         if testResult.caseInsensitiveCompare("Pass") == .orderedSame {
             lines.append(DocxSummaryLine(text: "No water leakage was observed following the test.", spacingBefore: 0, spacingAfter: tightSpacing))
         } else if testResult.caseInsensitiveCompare("Fail") == .orderedSame {
             lines.append(DocxSummaryLine(text: "Water leakage was observed following the test.", spacingBefore: 0, spacingAfter: tightSpacing))
-        } else if testResult.caseInsensitiveCompare("Not Tested") == .orderedSame || window.isInaccessible {
+        } else if testResult.caseInsensitiveCompare("Unable to Test") == .orderedSame || window.isInaccessible {
             lines.append(DocxSummaryLine(text: "Window was not tested.", spacingBefore: 0, spacingAfter: tightSpacing))
             // Add reason if available (using optional chaining for backward compatibility)
             if let reason = window.value(forKey: "untestedReason") as? String, !reason.isEmpty {
@@ -3308,11 +3313,6 @@ struct FieldResultsPackage {
             }
         } else {
             lines.append(DocxSummaryLine(text: "Test result is pending.", spacingBefore: 0, spacingAfter: tightSpacing))
-        }
-
-        if let notes = window.notes?.trimmedOrNil {
-            lines.append(DocxSummaryLine(text: "", spacingBefore: 0, spacingAfter: sectionSpacing))
-            lines.append(DocxSummaryLine(text: "Notes: \(notes)", spacingBefore: 0, spacingAfter: tightSpacing))
         }
 
         return lines
@@ -3926,7 +3926,6 @@ fileprivate final class DocxTemplateRenderer {
             ("DATE OF INSPECTIONS", inspectionDate),
             ("PREPARED FOR", trimmedClient?.isEmpty == false ? trimmedClient! : "Unknown"),
             ("PREPARED BY", trimmedInspector?.isEmpty == false ? trimmedInspector! : "Unknown"),
-            ("OWNER NAME", trimmedClient?.isEmpty == false ? trimmedClient! : "Unknown"),
             ("ADDRESS", addressComponents.isEmpty ? "Unknown" : addressComponents.joined(separator: ", "))
         ]
 
@@ -4371,19 +4370,19 @@ fileprivate final class DocxTemplateRenderer {
                     <w:jc w:val="right"/>
                   </w:pPr>
                   <w:r>
-                    <w:t xml:space="preserve">PAGE </w:t>
+                    <w:t xml:space="preserve">Page </w:t>
                   </w:r>
                   <w:r>
                     <w:fldChar w:fldCharType="begin"/>
                   </w:r>
                   <w:r>
-                    <w:instrText xml:space="preserve"> PAGE </w:instrText>
+                    <w:instrText xml:space="preserve"> Page </w:instrText>
                   </w:r>
                   <w:r>
                     <w:fldChar w:fldCharType="end"/>
                   </w:r>
                   <w:r>
-                    <w:t xml:space="preserve"> OF </w:t>
+                    <w:t xml:space="preserve"> of </w:t>
                   </w:r>
                   <w:r>
                     <w:fldChar w:fldCharType="begin"/>
@@ -5012,7 +5011,7 @@ fileprivate final class DocxTemplateRenderer {
         
         // WEATHER HISTORY Section
         xml += xmlBoldParagraph("WEATHER HISTORY:", color: "5BA3D6", spacingBefore: 0, spacingAfter: 0)
-        let weatherHistoryText = "The home was directly in the path of Hurricane Milton. The wind gusts in the area were recorded at over 170 mph on October 9, 2024. NOAA reports sustained winds of between 61 and 91mph."
+        let weatherHistoryText = "The home was directly in the path of Hurricane Milton. The wind gusts in the area were recorded at over 170 mph on October 9, 2024. NOAA reports sustained winds of between 61 and 91 mph."
         xml += xmlParagraphWithSuperscript(weatherHistoryText, superscriptText: "2", spacingBefore: 0, spacingAfter: 240)
         
         // First image: Hurricane Milton radar (static)
@@ -5296,7 +5295,7 @@ fileprivate final class DocxTemplateRenderer {
     
     private func getDisplayTestResult(for window: Window) -> String {
         if window.isInaccessible {
-            return "Not Tested"
+            return "Unable to Test"
         }
         return window.testResult ?? "Pending"
     }
@@ -7118,10 +7117,7 @@ extension FieldResultsPackage {
         // If no number found, return original (fallback for names like "W01")
         return name
     }
-}
-
-// MARK: - Coordinate Conversion Helpers (matching app's logic)
-extension FieldResultsPackage {
+    
     /// Convert image X coordinate to frame X coordinate using same logic as app's convertImageToViewX
     /// Returns position from left edge of frame (top-down coordinate system)
     private func convertImageXToFrameX(_ imageX: CGFloat, frameSize: CGSize, originalImageSize: CGSize) -> CGFloat {
@@ -7235,3 +7231,4 @@ extension FieldResultsPackage {
         }
     }
 }
+

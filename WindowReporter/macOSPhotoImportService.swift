@@ -45,7 +45,12 @@ class macOSPhotoImportService {
         photo.includeInReport = true
         photo.window = window
         
+        print("MYDEBUG → macOSPhotoImportService - Creating photo: ID=\(photo.photoId ?? "nil"), Type=\(photoType.rawValue), Window=\(window.windowNumber ?? "nil")")
+        
         try context.save()
+        
+        print("MYDEBUG → macOSPhotoImportService - Photo saved successfully. Window now has \(window.photos?.count ?? 0) photos")
+        
         return photo
     }
     
@@ -75,6 +80,7 @@ class macOSPhotoImportService {
         
         // Create new photo entity
         let photo = Photo(context: context)
+        let photoIdBefore = photo.photoId
         photo.photoId = UUID().uuidString
         photo.photoType = photoType.rawValue
         photo.filePath = relativePath
@@ -82,9 +88,44 @@ class macOSPhotoImportService {
         photo.createdAt = Date()
         photo.notes = note
         photo.includeInReport = true
+        
+        // Log before setting relationship
+        let photosBefore = window.photos?.count ?? 0
+        print("MYDEBUG → macOSPhotoImportService - Creating photo from file:")
+        print("MYDEBUG →   Photo ID: \(photo.photoId ?? "nil")")
+        print("MYDEBUG →   Photo Type: \(photoType.rawValue)")
+        print("MYDEBUG →   Window ID: \(window.windowId ?? "nil")")
+        print("MYDEBUG →   Window Number: \(window.windowNumber ?? "nil")")
+        print("MYDEBUG →   Window has \(photosBefore) photos before adding new photo")
+        print("MYDEBUG →   File Path: \(relativePath)")
+        
+        // Set window relationship
         photo.window = window
         
+        // Refresh window to ensure relationship is visible
+        context.refresh(window, mergeChanges: true)
+        
+        // Log after setting relationship (before save)
+        let photosAfterSet = window.photos?.count ?? 0
+        print("MYDEBUG →   Window has \(photosAfterSet) photos after setting relationship (before save)")
+        
         try context.save()
+        
+        // Refresh window again after save to ensure relationship is fully established
+        context.refresh(window, mergeChanges: true)
+        
+        // Verify relationship after save
+        let photosAfterSave = window.photos?.count ?? 0
+        print("MYDEBUG → macOSPhotoImportService - Photo saved successfully")
+        print("MYDEBUG →   Window now has \(photosAfterSave) photos after save")
+        if let photosSet = window.photos {
+            let photoArray = photosSet.allObjects as? [Photo] ?? []
+            print("MYDEBUG →   Photo IDs in window.photos:")
+            for p in photoArray {
+                print("MYDEBUG →     - Photo ID: \(p.photoId ?? "nil"), Type: \(p.photoType ?? "nil")")
+            }
+        }
+        
         return photo
     }
     

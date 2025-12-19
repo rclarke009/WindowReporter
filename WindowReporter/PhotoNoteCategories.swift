@@ -9,29 +9,46 @@ import Foundation
 import SwiftUI
 
 enum PhotoType: String, CaseIterable {
+    // Legacy types (kept for backward compatibility)
     case exterior = "Exterior"
     case interior = "Interior"
     case leak = "Leak"
+    case aama = "AAMA"
+    
+    // New specific types
+    case interiorWideView = "Interior Wide View"
+    case interiorCloseup = "Interior Close-up & Damage"
+    case leakCloseups = "Leak Close-ups"
+    case exteriorWideView = "Exterior Wide View"
+    case exteriorPhotos = "Exterior Photos"
     
     var icon: String {
         switch self {
-        case .exterior:
+        case .exterior, .exteriorWideView, .exteriorPhotos:
             return "house"
-        case .interior:
+        case .interior, .interiorWideView:
             return "door.left.hand.open"
-        case .leak:
+        case .interiorCloseup:
+            return "camera.macro"
+        case .leak, .leakCloseups:
             return "drop"
+        case .aama:
+            return "tag"
         }
     }
     
     var color: Color {
         switch self {
-        case .exterior:
+        case .exterior, .exteriorWideView, .exteriorPhotos:
             return .green
-        case .interior:
-            return .yellow
-        case .leak:
+        case .interior, .interiorWideView:
+            return Color(red: 0, green: 0.5, blue: 0.6) // Darker teal
+        case .interiorCloseup:
+            return .indigo
+        case .leak, .leakCloseups:
             return .blue
+        case .aama:
+            return .indigo
         }
     }
 }
@@ -162,11 +179,11 @@ struct PhotoNoteCategories {
     // Get categories for a specific photo type
     static func getCategories(for photoType: PhotoType) -> [PhotoNoteCategory] {
         switch photoType {
-        case .exterior:
+        case .exterior, .exteriorWideView, .exteriorPhotos, .aama:
             return exteriorCategories
-        case .interior:
+        case .interior, .interiorWideView, .interiorCloseup:
             return interiorCategories
-        case .leak:
+        case .leak, .leakCloseups:
             return leakCategories
         }
     }
