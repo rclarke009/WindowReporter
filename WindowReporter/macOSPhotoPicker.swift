@@ -416,7 +416,7 @@ struct PhotoNoteSelectionView: View {
     
     private var currentNoteFieldView: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Current Note")
+            Text("Current Caption")
                 .font(.headline)
                 .padding(.horizontal)
             
@@ -444,7 +444,7 @@ struct PhotoNoteSelectionView: View {
     
     private var categorySelectionView: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Select Note Category")
+            Text("Choose Photo Caption")
                 .font(.headline)
                 .padding(.horizontal)
             
@@ -528,6 +528,10 @@ struct PhotoNoteSelectionView: View {
                             .padding(8)
                             .background(Color(.controlBackgroundColor))
                             .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color(NSColor.separatorColor), lineWidth: 1)
+                            )
                             .padding(.horizontal)
                             .onAppear {
                                 // Initialize customNoteText from currentNoteText if it exists

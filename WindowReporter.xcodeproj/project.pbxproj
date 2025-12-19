@@ -33,22 +33,9 @@
 		A97DF7812ECD42E4009A20DD /* WindowReporterUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WindowReporterUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		A97DF7892ECD42E4009A20DD /* Exceptions for "WindowReporter" folder in "WindowReporter" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = A97DF7662ECD42E3009A20DD /* WindowReporter */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A97DF7692ECD42E3009A20DD /* WindowReporter */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				A97DF7892ECD42E4009A20DD /* Exceptions for "WindowReporter" folder in "WindowReporter" target */,
-			);
 			path = WindowReporter;
 			sourceTree = "<group>";
 		};
@@ -298,7 +285,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 60;
+				CURRENT_PROJECT_VERSION = 78;
 				DEVELOPMENT_TEAM = Q3CS4DPG9Y;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -333,7 +320,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 60;
+				CURRENT_PROJECT_VERSION = 78;
 				DEVELOPMENT_TEAM = Q3CS4DPG9Y;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;

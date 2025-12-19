@@ -625,15 +625,59 @@ class JobImportService: ObservableObject {
             }
             
             // Import photos using file system storage (macOS-specific)
-            for photoData in windowData.photos {
+            print("MYDEBUG → JobImportService - Importing \(windowData.photos.count) photos for window \(window.windowNumber ?? "?")")
+            for (photoIndex, photoData) in windowData.photos.enumerated() {
+                print("MYDEBUG →   Importing photo \(photoIndex + 1)/\(windowData.photos.count): \(photoData.photoId)")
                 try await importPhoto(from: directory, photoData: photoData, for: window)
+            }
+            
+            // Refresh window after importing all photos
+            context.refresh(window, mergeChanges: true)
+            
+            // Verify photos were imported
+            let finalPhotoCount = window.photos?.count ?? 0
+            print("MYDEBUG → JobImportService - Finished importing photos for window \(window.windowNumber ?? "?")")
+            print("MYDEBUG →   Expected: \(windowData.photos.count) photos")
+            print("MYDEBUG →   Actual: \(finalPhotoCount) photos")
+            if let photosSet = window.photos {
+                let photoArray = photosSet.allObjects as? [Photo] ?? []
+                print("MYDEBUG →   Photo IDs:")
+                for p in photoArray {
+                    print("MYDEBUG →     - \(p.photoId ?? "nil") (\(p.photoType ?? "nil"))")
+                }
             }
             
             let progress = 0.6 + (Double(index + 1) / Double(windowCount)) * 0.3
             await MainActor.run { importProgress = progress }
         }
         
+        // Refresh all windows before final save
+        print("MYDEBUG → JobImportService - Refreshing all windows before final save")
+        for windowData in package.job.windows {
+            let fetchRequest: NSFetchRequest<Window> = Window.fetchRequest()
+            fetchRequest.predicate = NSPredicate(format: "windowId == %@ AND job == %@", windowData.windowId, job)
+            fetchRequest.fetchLimit = 1
+            if let window = try? context.fetch(fetchRequest).first {
+                context.refresh(window, mergeChanges: true)
+                let photoCount = window.photos?.count ?? 0
+                print("MYDEBUG →   Window \(window.windowNumber ?? "?") has \(photoCount) photos")
+            }
+        }
+        
         try context.save()
+        
+        // Final verification after save
+        print("MYDEBUG → JobImportService - Final verification after save")
+        for windowData in package.job.windows {
+            let fetchRequest: NSFetchRequest<Window> = Window.fetchRequest()
+            fetchRequest.predicate = NSPredicate(format: "windowId == %@ AND job == %@", windowData.windowId, job)
+            fetchRequest.fetchLimit = 1
+            if let window = try? context.fetch(fetchRequest).first {
+                let photoCount = window.photos?.count ?? 0
+                print("MYDEBUG →   Window \(window.windowNumber ?? "?") final photo count: \(photoCount)")
+            }
+        }
+        
         return job
     }
     
@@ -1109,6 +1153,11 @@ class JobImportService: ObservableObject {
         )
         
         // Update photo metadata
+        print("MYDEBUG → JobImportService - Updating photo metadata:")
+        print("MYDEBUG →   Original photoId: \(photo.photoId ?? "nil")")
+        print("MYDEBUG →   New photoId from package: \(photoData.photoId)")
+        print("MYDEBUG →   Window: \(window.windowNumber ?? "nil")")
+        
         photo.photoId = photoData.photoId
         photo.arrowXPosition = photoData.arrowXPosition ?? 0.0
         photo.arrowYPosition = photoData.arrowYPosition ?? 0.0
@@ -1117,6 +1166,18 @@ class JobImportService: ObservableObject {
         if let createdAt = photoData.createdAt {
             photo.createdAt = Date(timeIntervalSince1970: createdAt)
         }
+        
+        // Save context after updating metadata
+        try context.save()
+        
+        // Refresh window to ensure relationship is visible
+        context.refresh(window, mergeChanges: true)
+        
+        // Verify relationship
+        let photoCount = window.photos?.count ?? 0
+        print("MYDEBUG → JobImportService - Photo metadata updated and saved")
+        print("MYDEBUG →   Final photoId: \(photo.photoId ?? "unknown")")
+        print("MYDEBUG →   Window now has \(photoCount) photos")
         
         print("✅ Successfully imported photo: \(photo.photoId ?? "unknown")")
     }
@@ -1138,7 +1199,7 @@ enum ImportError: LocalizedError {
         case .missingJobsJSON:
             return "The ZIP file doesn't contain a jobs.json or full-job-package.json file"
         case .invalidJSONFormat:
-            return "The JSON file has an invalid format"
+            return "The data file has an invalid format"
         case .imageProcessingFailed:
             return "Failed to process images"
         case .photoImportFailed:
@@ -1146,7 +1207,7 @@ enum ImportError: LocalizedError {
         case .missingFullJobPackage:
             return "The package doesn't contain a full-job-package.json file"
         case .invalidFullJobPackageFormat:
-            return "The full-job-package.json file has an invalid format"
+            return "The data file has an invalid format"
         }
     }
 }
