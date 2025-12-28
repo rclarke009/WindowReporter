@@ -385,7 +385,7 @@ class JobImportService: ObservableObject {
             job.phoneNumber = jobData.phoneNumber
             job.areasOfConcern = jobData.areasOfConcern
             job.status = "Ready"
-            job.testProcedure = "ASTM E331"
+            job.testProcedure = "ASTM E1105"
             job.waterPressure = 12.0
             job.createdAt = Date()
             job.updatedAt = Date()
@@ -531,7 +531,7 @@ class JobImportService: ObservableObject {
             job.phoneNumber = package.job.phoneNumber
             job.areasOfConcern = package.job.areasOfConcern
             job.status = package.job.status ?? "Ready"
-            job.testProcedure = package.job.testProcedure ?? "ASTM E331"
+            job.testProcedure = package.job.testProcedure ?? "ASTM E1105"
             job.waterPressure = package.job.waterPressure ?? 12.0
             job.inspectorName = package.job.inspectorName
             job.inspectionDate = package.job.inspectionDate.map { Date(timeIntervalSince1970: $0) }

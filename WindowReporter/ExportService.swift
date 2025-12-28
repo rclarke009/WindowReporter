@@ -655,7 +655,7 @@ struct FieldResultsPackage {
                 case "Exterior":
                     defaultCaption = "Exterior Photo"
                 default:
-                    defaultCaption = "Photo"
+                    defaultCaption = "Specimen Photo"
                 }
                 await addPhotoIfNotDuplicate(photo, defaultCaption: defaultCaption)
             }
@@ -905,7 +905,7 @@ struct FieldResultsPackage {
     let windowNumber = window.windowNumber ?? "1"
     let specimenNumber = windowNumber.replacingOccurrences(of: "Specimen ", with: "")
     let testNumber = specimenNumber
-    let procedure = job.testProcedure ?? "ASTM E331"
+    let procedure = job.testProcedure ?? "ASTM E1105"
     let dateFormatter = DateFormatter()
     dateFormatter.timeStyle = .short
     dateFormatter.dateStyle = .none
@@ -1041,7 +1041,7 @@ struct FieldResultsPackage {
     //     let windowNumber = window.windowNumber ?? "1"
     //     let specimenNumber = windowNumber.replacingOccurrences(of: "Specimen ", with: "")
     //     let testNumber = specimenNumber
-    //     let procedure = job.testProcedure ?? "ASTM E331"
+    //     let procedure = job.testProcedure ?? "ASTM E1105"
     //     let dateFormatter = DateFormatter()
     //     dateFormatter.timeStyle = .short
     //     dateFormatter.dateStyle = .none
@@ -2355,7 +2355,7 @@ struct FieldResultsPackage {
             .font: bodyFont,
             .foregroundColor: NSColor.black
         ]
-        let testPerformedText = "The ASTM E331 water test simulates rain conditions and was used to test if the windows are leaking."
+        let testPerformedText = "The ASTM E1105 water test simulates rain conditions and was used to test if the windows are leaking."
         let textRect = CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: 0)
         let boundingRect = testPerformedText.boundingRect(with: CGSize(width: textRect.width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: bodyAttributes, context: nil)
         testPerformedText.draw(in: CGRect(x: 50, y: currentY, width: textRect.width, height: boundingRect.height), withAttributes: bodyAttributes)
@@ -2377,7 +2377,7 @@ struct FieldResultsPackage {
         currentY += subHeadingRect.height + 15
         
         // Background information paragraphs
-        let backgroundPara1 = "Cyclical wind pressures in hurricanes can cause windows to fail even if they are structurally sound. According to FEMA Fact Sheet 1.3, these pressures can create significant stress on building components, leading to structural integrity issues over time."
+        let backgroundPara1 = "Cyclical wind pressures in hurricanes can cause windows to fail even if they are structurally sound. Cyclical wind pressures in hurricanes can create significant stress on building components, leading to structural integrity issues over time."
         let para1Rect = backgroundPara1.boundingRect(with: CGSize(width: pageRect.width - 100, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: bodyAttributes, context: nil)
         backgroundPara1.draw(in: CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: para1Rect.height), withAttributes: bodyAttributes)
         currentY += para1Rect.height + 12
@@ -2424,9 +2424,9 @@ struct FieldResultsPackage {
         // Recommendations paragraph 1
         let recommendationsPara1: String
         if failedCount > 0 {
-            recommendationsPara1 = "\(failedCount) of \(totalTestedWindows) window\(totalTestedWindows == 1 ? "" : "s") failed the ASTM E331 water test and require repair or replacement. Cyclical pressures from hurricanes can cause windows to fail by weakening glazing, damaging seals, and creating openings that lead to interior damage. For more details on hurricane damage to windows, see the section below called Common Terms."
+            recommendationsPara1 = "\(failedCount) of \(totalTestedWindows) window\(totalTestedWindows == 1 ? "" : "s") failed the ASTM E1105 water test and require repair or replacement. Cyclical pressures from hurricanes can cause windows to fail by weakening glazing, damaging seals, and creating openings that lead to interior damage. For more details on hurricane damage to windows, see the section below called Common Terms."
         } else {
-            recommendationsPara1 = "All tested windows passed the ASTM E331 water test. However, cyclical pressures from hurricanes can still cause windows to fail by weakening glazing, damaging seals, and creating openings that lead to interior damage. For more details on hurricane damage to windows, see the section below called Common Terms."
+            recommendationsPara1 = "All tested windows passed the ASTM E1105 water test. However, cyclical pressures from hurricanes can still cause windows to fail by weakening glazing, damaging seals, and creating openings that lead to interior damage. For more details on hurricane damage to windows, see the section below called Common Terms."
         }
         let recPara1Rect = recommendationsPara1.boundingRect(with: CGSize(width: pageRect.width - 100, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: bodyAttributes, context: nil)
         recommendationsPara1.draw(in: CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: recPara1Rect.height), withAttributes: bodyAttributes)
@@ -2654,7 +2654,7 @@ struct FieldResultsPackage {
                 .font: descriptionFont,
                 .foregroundColor: NSColor.black
             ]
-            let descriptionText = "Verifying pressure of equipment before ASTM E331 water test which simulates real rain conditions."
+            let descriptionText = "Verifying pressure of equipment before ASTM E1105 water test which simulates real rain conditions."
             let descriptionRect = CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: 40)
             descriptionText.draw(in: descriptionRect, withAttributes: descriptionAttributes)
             currentY = descriptionRect.maxY + 40
@@ -4088,7 +4088,7 @@ fileprivate final class DocxTemplateRenderer {
                     body += xmlImageParagraph(relId: gaugeRef.relId, docPrId: gaugeRef.docPrId, cx: gaugeResource.cx, cy: gaugeResource.cy, alignment: "center")
                     body += xmlSpacerParagraph(before: 120, after: 120, centered: true)
                     body += xmlParagraph("Location: Onsite", style: "Normal")
-                    body += xmlParagraph("Verifying pressure of equipment before ASTM E331 water test which simulates real rain conditions.", style: "Normal")
+                    body += xmlParagraph("Verifying pressure of equipment before ASTM E1105 water test which simulates real rain conditions.", style: "Normal")
                     body += xmlSpacerParagraph(before: 240, after: 240)
                 }
             }
@@ -4940,7 +4940,7 @@ fileprivate final class DocxTemplateRenderer {
         
         // TEST PERFORMED Section
         xml += xmlBoldParagraph("TEST PERFORMED", color: "10325d", spacingBefore: 0, spacingAfter: 120)
-        xml += xmlParagraph("The ASTM E331 water test simulates rain conditions and was used to test if the windows are leaking.", spacingBefore: 0, spacingAfter: 240)
+        xml += xmlParagraph("The ASTM E1105 water test simulates rain conditions and was used to test if the windows are leaking.", spacingBefore: 0, spacingAfter: 240)
         
         // BACKGROUND INFORMATION Section
         xml += xmlBoldParagraph("BACKGROUND INFORMATION", color: "10325d", spacingBefore: 0, spacingAfter: 120)
@@ -4976,9 +4976,9 @@ fileprivate final class DocxTemplateRenderer {
         // Recommendations paragraph 1
         let recommendationsPara1: String
         if failedCount > 0 {
-            recommendationsPara1 = "\(failedCount) of \(totalTestedWindows) window\(totalTestedWindows == 1 ? "" : "s") failed the ASTM E331 water test and require repair or replacement. Cyclical pressures from hurricanes can cause windows to fail by weakening glazing, damaging seals, and creating openings that lead to interior damage. For more details on hurricane damage to windows, see the section below called Common Terms."
+            recommendationsPara1 = "\(failedCount) of \(totalTestedWindows) window\(totalTestedWindows == 1 ? "" : "s") failed the ASTM E1105 water test and require repair or replacement. Cyclical pressures from hurricanes can cause windows to fail by weakening glazing, damaging seals, and creating openings that lead to interior damage. For more details on hurricane damage to windows, see the section below called Common Terms."
         } else {
-            recommendationsPara1 = "All tested windows passed the ASTM E331 water test. However, cyclical pressures from hurricanes can still cause windows to fail by weakening glazing, damaging seals, and creating openings that lead to interior damage. For more details on hurricane damage to windows, see the section below called Common Terms."
+            recommendationsPara1 = "All tested windows passed the ASTM E1105 water test. However, cyclical pressures from hurricanes can still cause windows to fail by weakening glazing, damaging seals, and creating openings that lead to interior damage. For more details on hurricane damage to windows, see the section below called Common Terms."
         }
         xml += xmlParagraph(recommendationsPara1, spacingBefore: 0, spacingAfter: 120)
         
@@ -6886,7 +6886,7 @@ fileprivate final class DocxTemplateRenderer {
         // Extract specimen number from window number
         let specimenNumber = extractNumberFromSpecimenName(window.windowNumber ?? "1")
         let testNumber = specimenNumber
-        let procedure = job.testProcedure?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "ASTM E331"
+        let procedure = job.testProcedure?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "ASTM E1105"
         
         // Format times
         let timeFormatter = DateFormatter()

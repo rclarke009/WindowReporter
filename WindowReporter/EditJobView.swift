@@ -54,7 +54,7 @@ struct EditJobView: View {
         _inspectorName = State(initialValue: job.inspectorName ?? "")
         _inspectionDate = State(initialValue: job.inspectionDate ?? Date())
         _status = State(initialValue: job.status ?? "Ready")
-        _testProcedure = State(initialValue: job.testProcedure ?? "ASTM E331")
+        _testProcedure = State(initialValue: job.testProcedure ?? "ASTM E1105")
         _waterPressure = State(initialValue: job.waterPressure > 0 ? String(format: "%.0f", job.waterPressure) : "12")
         _overheadImageSourceName = State(initialValue: job.overheadImageSourceName ?? "")
         _overheadImageSourceUrl = State(initialValue: job.overheadImageSourceUrl ?? "")

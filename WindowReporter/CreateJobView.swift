@@ -200,7 +200,7 @@ struct CreateJobView: View {
         newJob.inspectorName = inspectorName.isEmpty ? nil : inspectorName
         newJob.inspectionDate = inspectionDate
         newJob.status = "Ready"
-        newJob.testProcedure = "ASTM E331"
+        newJob.testProcedure = "ASTM E1105"
         newJob.waterPressure = 12.0
         newJob.createdAt = Date()
         newJob.updatedAt = Date()

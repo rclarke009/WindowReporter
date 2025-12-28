@@ -25,7 +25,7 @@
         <attribute name="weatherCondition" optional="YES" attributeType="String"/>
         <attribute name="humidity" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
         <attribute name="windSpeed" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
-        <attribute name="testProcedure" optional="YES" attributeType="String" defaultValueString="ASTM E331"/>
+        <attribute name="testProcedure" optional="YES" attributeType="String" defaultValueString="ASTM E1105"/>
         <attribute name="waterPressure" optional="YES" attributeType="Double" defaultValueString="12.0" usesScalarValueType="YES"/>
         <attribute name="status" optional="NO" attributeType="String" defaultValueString="Ready"/>
         <attribute name="createdAt" optional="NO" attributeType="Date" usesScalarValueType="NO"/>
