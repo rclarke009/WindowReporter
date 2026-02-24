@@ -35,6 +35,135 @@ func drawNSImage(_ image: NSImage, in rect: CGRect, context: CGContext) {
     context.draw(cgImage, in: rect)
 }
 
+/// Draw image with AspectFit - fits in rect, preserves aspect ratio, no stretch. Used for specimen photos.
+private func drawNSImageAspectFit(_ image: NSImage, in rect: CGRect, context: CGContext) {
+    guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmapRep = NSBitmapImageRep(data: tiffData),
+              let cgImage = bitmapRep.cgImage else {
+            return
+        }
+        drawCGImageAspectFit(cgImage: cgImage, in: rect, context: context)
+        return
+    }
+    drawCGImageAspectFit(cgImage: cgImage, in: rect, context: context)
+}
+
+private func drawCGImageAspectFit(cgImage: CGImage, in rect: CGRect, context: CGContext) {
+    let imageWidth = CGFloat(cgImage.width)
+    let imageHeight = CGFloat(cgImage.height)
+    guard imageWidth > 0, imageHeight > 0, rect.width > 0, rect.height > 0 else { return }
+    let scale = min(rect.width / imageWidth, rect.height / imageHeight)
+    let drawWidth = imageWidth * scale
+    let drawHeight = imageHeight * scale
+    let drawX = rect.minX + (rect.width - drawWidth) / 2
+    let drawY = rect.minY + (rect.height - drawHeight) / 2
+    let drawRect = CGRect(x: drawX, y: drawY, width: drawWidth, height: drawHeight)
+    context.saveGState()
+    context.clip(to: rect)
+    context.draw(cgImage, in: drawRect)
+    context.restoreGState()
+}
+
+/// Draw overhead image. Always uses simple draw for PDF compatibility; zoom/pan/rotation from job are ignored in the report.
+private func drawOverheadImage(_ image: NSImage, in rect: CGRect, context: CGContext, job: Job) {
+    drawNSImage(image, in: rect, context: context)
+}
+
+/// Draw image with AspectFill - fills the rect, crops overflow (center crop). Used for Specimen Locations zoomed view.
+/// Pan values are in image pixel space; they shift the visible region (e.g. panX > 0 shows more of the right side).
+private func drawNSImageAspectFill(_ image: NSImage, in rect: CGRect, context: CGContext, panX: CGFloat = 0, panY: CGFloat = 0, zoomFactor: CGFloat = 1) {
+    guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmapRep = NSBitmapImageRep(data: tiffData),
+              let cgImage = bitmapRep.cgImage else {
+            return
+        }
+        drawCGImageAspectFill(cgImage: cgImage, in: rect, context: context, panX: panX, panY: panY, zoomFactor: zoomFactor)
+        return
+    }
+    drawCGImageAspectFill(cgImage: cgImage, in: rect, context: context, panX: panX, panY: panY, zoomFactor: zoomFactor)
+}
+
+private func drawCGImageAspectFill(cgImage: CGImage, in rect: CGRect, context: CGContext, panX: CGFloat = 0, panY: CGFloat = 0, zoomFactor: CGFloat = 1) {
+    let imageWidth = CGFloat(cgImage.width)
+    let imageHeight = CGFloat(cgImage.height)
+    guard imageWidth > 0, imageHeight > 0, rect.width > 0, rect.height > 0 else { return }
+    
+    let scale = zoomFactor * max(rect.width / imageWidth, rect.height / imageHeight)
+    let drawWidth = imageWidth * scale
+    let drawHeight = imageHeight * scale
+    let drawX = rect.minX + (rect.width - drawWidth) / 2 + panX * scale
+    let drawY = rect.minY + (rect.height - drawHeight) / 2 - panY * scale
+    let drawRect = CGRect(x: drawX, y: drawY, width: drawWidth, height: drawHeight)
+    
+    context.saveGState()
+    context.clip(to: rect)
+    context.draw(cgImage, in: drawRect)
+    context.restoreGState()
+}
+
+/// Transform a point from image coordinates to the draw rect's coordinate system (matches drawTransformedImage).
+private func transformImagePointToRect(dx: CGFloat, dy: CGFloat, imageWidth: CGFloat, imageHeight: CGFloat, rect: CGRect, scale: CGFloat, panX: CGFloat, panY: CGFloat, rotation: CGFloat) -> CGPoint {
+    var px = (dx - imageWidth / 2 - panX) * scale
+    var py = (dy - imageHeight / 2 - panY) * scale
+    let cosR = cos(-rotation)
+    let sinR = sin(-rotation)
+    let rx = px * cosR - py * sinR
+    let ry = px * sinR + py * cosR
+    return CGPoint(x: rect.midX + rx, y: rect.midY + ry)
+}
+
+private func drawTransformedImage(cgImage: CGImage, in rect: CGRect, context: CGContext, scale: CGFloat, panX: CGFloat, panY: CGFloat, rotation: CGFloat) {
+    let imageWidth = CGFloat(cgImage.width)
+    let imageHeight = CGFloat(cgImage.height)
+    
+    context.saveGState()
+    context.clip(to: rect)
+    
+    context.translateBy(x: rect.midX, y: rect.midY)
+    context.rotate(by: -rotation)
+    context.scaleBy(x: scale, y: scale)
+    context.translateBy(x: -panX, y: -panY)
+    context.translateBy(x: -imageWidth / 2, y: -imageHeight / 2)
+    
+    let imageRect = CGRect(x: 0, y: 0, width: imageWidth, height: imageHeight)
+    context.draw(cgImage, in: imageRect)
+    
+    context.restoreGState()
+}
+
+private func loadOverheadImageForExport(job: Job) -> NSImage? {
+    let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!.path
+    guard let imagePath = job.overheadImagePath else { return nil }
+    let overheadDir = URL(fileURLWithPath: documentsDir).appendingPathComponent("overhead_images")
+    let imageURL = overheadDir.appendingPathComponent(imagePath)
+    guard FileManager.default.fileExists(atPath: imageURL.path) else { return nil }
+    return NSImage(contentsOfFile: imageURL.path)
+}
+
+/// Scale factor to fit transformed content within container (matches app's overheadFitScale).
+private func overheadFitScaleForExport(imageSize: CGSize, scale: CGFloat, rotation: Double, containerSize: CGSize) -> CGFloat {
+    let scaledW = imageSize.width * scale
+    let scaledH = imageSize.height * scale
+    let rotRad = CGFloat(rotation * .pi / 180)
+    let boxW = scaledW * abs(cos(rotRad)) + scaledH * abs(sin(rotRad))
+    let boxH = scaledW * abs(sin(rotRad)) + scaledH * abs(cos(rotRad))
+    guard boxW > 0, boxH > 0, containerSize.width > 0, containerSize.height > 0 else { return 1 }
+    return min(1, containerSize.width / boxW, containerSize.height / boxH)
+}
+
+/// Get canonical pixel dimensions for export (matches drawTransformedImage cgImage).
+private func overheadImagePixelSizeForExport(_ image: NSImage) -> CGSize {
+    if let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+        return CGSize(width: cg.width, height: cg.height)
+    }
+    if let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff) {
+        return CGSize(width: bitmap.pixelsWide, height: bitmap.pixelsHigh)
+    }
+    return image.size
+}
+
 // Helper function to format address with proper handling of missing components
 private func formatAddressForExport(addressLine1: String, city: String?, state: String?, zip: String?) -> String {
     var components: [String] = []
@@ -63,6 +192,9 @@ private func formatAddressForExport(addressLine1: String, city: String?, state: 
 }
 
 struct FieldResultsPackage {
+    /// 3/4 inch in points (72 points per inch) - used to shift cover text, titles, and specimen content down
+    private static let layoutShiftDown: CGFloat = 54
+
     let job: Job
     let exportDirectory: URL
     
@@ -206,6 +338,20 @@ struct FieldResultsPackage {
             }
             return "Unknown-full-export"
         }
+    }
+    
+    /// Generate PDF filename using full street address + " Window Test Report.pdf" (match iOS)
+    private func generatePDFFilename(for job: Job) -> String {
+        let address = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+        var sanitizedAddress = address
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: "\0", with: "")
+        sanitizedAddress = sanitizedAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !sanitizedAddress.isEmpty {
+            return "\(sanitizedAddress) Window Test Report.pdf"
+        }
+        return "Window Test Report.pdf"
     }
     
     private func dotColor(for window: Window) -> NSColor {
@@ -600,7 +746,7 @@ struct FieldResultsPackage {
         return pdfData as Data
     }
     
-    func generatePDFReport() async throws -> Data {
+    func generatePDFReport(includeEngineeringLetter: Bool = false) async throws -> Data {
         let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792) // US Letter size (8.5" x 11")
         
         // Create mutable data for PDF
@@ -654,6 +800,8 @@ struct FieldResultsPackage {
                     defaultCaption = "Leak Photo"
                 case "Exterior":
                     defaultCaption = "Exterior Photo"
+                case "AAMA":
+                    defaultCaption = "AAMA Label Photo"
                 default:
                     defaultCaption = "Specimen Photo"
                 }
@@ -674,17 +822,17 @@ struct FieldResultsPackage {
             }
         }
         
-        // Calculate total pages including cover, overview, engineering letter, purpose/weather, damage locations, summary of findings, window testing summary pages, calibration page, works cited, and credentials page
-        let totalPages = allPages.count + 10 // +10 for cover (page 1), overview (page 2), engineering letter (page 3), purpose/weather (page 4), damage locations (page 5), summary of findings (page 6), window testing summary (page 7), calibration, works cited, and credentials (last page)
+        // Calculate total pages: cover, overview, [optional engineering letter], purpose/weather, damage locations, summary of findings, window testing summary, test+photo pages, calibration, parts of window, common terms, works cited, credentials
+        let basePages = 12 + (includeEngineeringLetter ? 1 : 0)
+        let totalPages = allPages.count + basePages
         
         // Generate PDF synchronously (pdfData is a synchronous method)
         // Capture self explicitly to avoid capture issues in closure
         let job = self.job
         let windows = self.windows
         
-        // Create PDF title from job address/name
-        // Use cleaned address if available, fallback to original
-        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+        // Create PDF title from job address/name (match iOS: prefer full address)
+        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
         var addressComponents: [String] = []
         if !addressToUse.isEmpty {
             addressComponents.append(addressToUse)
@@ -782,34 +930,36 @@ struct FieldResultsPackage {
         self.drawOverviewPage(context: pdfContext, pageRect: pageRect, pageNumber: 2, totalPages: totalPages, job: job)
         endPage()
         
-        // Draw engineering letter page (page 3)
-        beginPage(pageName: "Engineering Letter")
-        self.drawEngineeringLetterPage(context: pdfContext, pageRect: pageRect, pageNumber: 3, totalPages: totalPages, job: job)
-        endPage()
+        var logicalPage = 3
+        if includeEngineeringLetter {
+            beginPage(pageName: "Engineering Letter")
+            self.drawEngineeringLetterPage(context: pdfContext, pageRect: pageRect, pageNumber: logicalPage, totalPages: totalPages, job: job)
+            endPage()
+            logicalPage += 1
+        }
         
-        // Draw purpose/observations/weather history page (page 4)
         beginPage(pageName: "Purpose/Observations/Weather")
-        self.drawPurposeObservationsWeatherPage(context: pdfContext, pageRect: pageRect, pageNumber: 4, totalPages: totalPages, job: job)
+        self.drawPurposeObservationsWeatherPage(context: pdfContext, pageRect: pageRect, pageNumber: logicalPage, totalPages: totalPages, job: job)
         endPage()
+        logicalPage += 1
         
-        // Draw damage locations page (page 5)
         beginPage(pageName: "Damage Locations")
-        self.drawSummaryPage(context: pdfContext, pageRect: pageRect, pageNumber: 5, totalPages: totalPages, job: job, windows: windows)
+        self.drawSummaryPage(context: pdfContext, pageRect: pageRect, pageNumber: logicalPage, totalPages: totalPages, job: job, windows: windows)
         endPage()
+        logicalPage += 1
         
-        // Draw summary of findings page (page 6)
         beginPage(pageName: "Summary of Findings")
-        self.drawSummaryOfFindingsPage(context: pdfContext, pageRect: pageRect, pageNumber: 6, totalPages: totalPages, job: job, windows: windows)
+        self.drawSummaryOfFindingsPage(context: pdfContext, pageRect: pageRect, pageNumber: logicalPage, totalPages: totalPages, job: job, windows: windows)
         endPage()
+        logicalPage += 1
         
-        // Draw window testing summary page (page 7)
         beginPage(pageName: "Window Testing Summary")
-        self.drawWindowTestingSummaryPage(context: pdfContext, pageRect: pageRect, pageNumber: 7, totalPages: totalPages, job: job, windows: windows)
+        self.drawWindowTestingSummaryPage(context: pdfContext, pageRect: pageRect, pageNumber: logicalPage, totalPages: totalPages, job: job, windows: windows)
         endPage()
+        logicalPage += 1
         
-        // Draw all other pages (test and photo pages start at page 8)
         for (index, pageInfo) in allPages.enumerated() {
-            let logicalPageNumber = index + 8 // +8 because cover is page 1, overview is page 2, engineering letter is page 3, purpose/weather is page 4, damage locations is page 5, summary of findings is page 6, window testing summary is page 7
+            let logicalPageNumber = logicalPage + index
             let pageName = pageInfo.type == "test" ? "Test Page for \(pageInfo.window?.windowNumber ?? "Unknown")" : "Photo Page for \(pageInfo.window?.windowNumber ?? "Unknown")"
             beginPage(pageName: pageName)
             
@@ -822,12 +972,22 @@ struct FieldResultsPackage {
         }
         
         // Draw calibration page
-        let calibrationPageNumber = totalPages - 2
+        let calibrationPageNumber = totalPages - 4
         beginPage(pageName: "Calibration")
         self.drawCalibrationPage(context: pdfContext, pageRect: pageRect, pageNumber: calibrationPageNumber, totalPages: totalPages, job: job)
         endPage()
         
-        // Draw works cited page (after calibration)
+        // Draw parts of window page
+        beginPage(pageName: "Parts of Window")
+        self.drawPartsOfWindowPage(context: pdfContext, pageRect: pageRect, pageNumber: totalPages - 3, totalPages: totalPages, job: job)
+        endPage()
+        
+        // Draw common terms windows page
+        beginPage(pageName: "Common Terms")
+        self.drawCommonTermsWindowsPage(context: pdfContext, pageRect: pageRect, pageNumber: totalPages - 2, totalPages: totalPages, job: job)
+        endPage()
+        
+        // Draw works cited page
         beginPage(pageName: "Works Cited")
         self.drawWorksCitedPage(context: pdfContext, pageRect: pageRect, pageNumber: totalPages - 1, totalPages: totalPages, job: job)
         endPage()
@@ -846,16 +1006,14 @@ struct FieldResultsPackage {
     }
     
     /// Export just the PDF report to a file and return the URL
-    func exportPDFReport() async throws -> URL {
+    func exportPDFReport(includeEngineeringLetter: Bool = false) async throws -> URL {
         let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let exportDirectory = documentsDirectory.appendingPathComponent("exports")
         try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
         
-        let addressNameId = generateSimpleAddressIdentifier(for: job)
-        let dateString = DateFormatter.exportDate.string(from: Date())
-        let fileName = "\(addressNameId)-\(dateString).pdf"
+        let fileName = generatePDFFilename(for: job)
         
-        let pdfData = try await generatePDFReport()
+        let pdfData = try await generatePDFReport(includeEngineeringLetter: includeEngineeringLetter)
         let pdfURL = exportDirectory.appendingPathComponent(fileName)
         try pdfData.write(to: pdfURL)
         
@@ -871,24 +1029,22 @@ struct FieldResultsPackage {
         .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
     ]
     let titleHeight: CGFloat = 30
-    let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
-    // Use backwards coordinate technique - bottom Y to render at top
+    let titleYFromTop: CGFloat = 50
     let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
     "WINDOW TESTING".draw(in: titleRect, withAttributes: titleAttributes)
     
-    // General Test Information Table - position below title (reduced margin for shift up)
-    let tableYTopDown = titleRect.maxY + 15.0  // ← Changed from +25 to +15 to shift up
-    let cellHeight = 22.0  // ← Match section bar height for consistency (was 25)
-    let colWidths: [CGFloat] = [100, 80, 200, 80, 100]
+    // Table below title - PDF Y increases upward, so "below" = decrease Y (clear gap so title doesn't overlap table)
+    let tableYTopDown = titleRect.minY - 25
+    let isInaccessible = window.isInaccessible
+    let colWidths: [CGFloat] = isInaccessible ? [100, 80, 200] : [100, 80, 140, 80, 100]
     var currentX: CGFloat = 50
     
-    // Header text (bold black, no blue bar)
     let headerFont = NSFont.boldSystemFont(ofSize: 12)
     let headerAttributes: [NSAttributedString.Key: Any] = [
         .font: headerFont,
         .foregroundColor: NSColor.black
     ]
-    let headers = ["Specimen No.", "Test No.", "Procedure", "Start Time", "Completion"]
+    let headers = isInaccessible ? ["Specimen No.", "Test No.", "Procedure"] : ["Specimen No.", "Test No.", "Procedure", "Start Time", "Completion"]
     currentX = 50
     for (index, header) in headers.enumerated() {
         let attributedHeader = NSAttributedString(string: header, attributes: headerAttributes)
@@ -896,7 +1052,6 @@ struct FieldResultsPackage {
         currentX += colWidths[index]
     }
     
-    // Data row (black text)
     let dataFont = NSFont.systemFont(ofSize: 11)
     let dataAttributes: [NSAttributedString.Key: Any] = [
         .font: dataFont,
@@ -906,54 +1061,48 @@ struct FieldResultsPackage {
     let specimenNumber = windowNumber.replacingOccurrences(of: "Specimen ", with: "")
     let testNumber = specimenNumber
     let procedure = job.testProcedure ?? "ASTM E1105"
-    let dateFormatter = DateFormatter()
-    dateFormatter.timeStyle = .short
-    dateFormatter.dateStyle = .none
-    // Use testStartTime if available, otherwise fallback to createdAt
-    let startTime: String
-    if let testStartTime = window.testStartTime {
-        startTime = dateFormatter.string(from: testStartTime)
+    let dataRow: [String]
+    if isInaccessible {
+        dataRow = [specimenNumber, testNumber, procedure]
     } else {
-        startTime = dateFormatter.string(from: window.createdAt ?? Date())
+        let dateFormatter = DateFormatter()
+        dateFormatter.timeStyle = .short
+        dateFormatter.dateStyle = .none
+        let startTime: String
+        if let testStartTime = window.testStartTime {
+            startTime = dateFormatter.string(from: testStartTime)
+        } else {
+            startTime = dateFormatter.string(from: window.createdAt ?? Date())
+        }
+        let completionTime: String
+        if let testStopTime = window.testStopTime {
+            completionTime = dateFormatter.string(from: testStopTime)
+        } else {
+            completionTime = "N/A"
+        }
+        dataRow = [specimenNumber, testNumber, procedure, startTime, completionTime]
     }
-    // Use testStopTime if available, otherwise show "N/A"
-    let completionTime: String
-    if let testStopTime = window.testStopTime {
-        completionTime = dateFormatter.string(from: testStopTime)
-    } else {
-        completionTime = "N/A"
-    }
-    currentX = 50
-    let dataRow = [specimenNumber, testNumber, procedure, startTime, completionTime]
     let headerLineHeight = headerFont.lineHeight
-    let dataTextY = tableYTopDown + headerLineHeight + 7  // Position below header text
+    let dataTextY = tableYTopDown - headerLineHeight - 7
+    currentX = 50
     for (index, data) in dataRow.enumerated() {
         data.draw(at: CGPoint(x: currentX + 5, y: dataTextY), withAttributes: dataAttributes)
         currentX += colWidths[index]
     }
     
-    // Sections start (spacing after table)
-    var currentY: CGFloat = dataTextY + dataFont.lineHeight + 15  // Space after header and data row
+    // Sections start below table (currentY = top of section A; sections return bottom Y)
+    var currentY: CGFloat = dataTextY - dataFont.lineHeight - 15
     
-    // Section A: Test Specimen
     currentY = drawSection(context: context, pageRect: pageRect, title: "A. Test Specimen", startY: currentY, window: window, job: job)
-    
-    // Section B: Specimen Type and Size
     currentY = drawSectionB(context: context, pageRect: pageRect, title: "B. Specimen Type and Size", startY: currentY, window: window, job: job)
-    
-    // Section C: Specimen Location
     currentY = drawSectionC(context: context, pageRect: pageRect, title: "C. Specimen Location and Related Information", startY: currentY, window: window, job: job)
-    
-    // Section D: Specimen Age
     currentY = drawSectionD(context: context, pageRect: pageRect, title: "D. Specimen Age and Performance", startY: currentY, window: window, job: job)
-    
-    // Section E: Weather Conditions
     currentY = drawSectionE(context: context, pageRect: pageRect, title: "E. Weather Conditions", startY: currentY, window: window, job: job)
     
-    // Test Recap and Comments (reduced spacing)
-    currentY += 5  // ← Reduced from +10 to +5
+    // Test Recap and Comments
+    currentY -= 3
     currentY = drawSectionHeader(context: context, pageRect: pageRect, title: "Test Recap and Comments:", startY: currentY)
-    currentY += 5
+    currentY -= 3
     
     let recapFont = NSFont.systemFont(ofSize: 11)
     let recapAttributes: [NSAttributedString.Key: Any] = [
@@ -966,23 +1115,23 @@ struct FieldResultsPackage {
     let resultText = (displayResult == "Pass" ? "No water leakage was observed following the test." : displayResult == "Fail" ? "Water leakage was observed following the test." : displayResult == "Unable to Test" ? "Window was not tested." : "Test result is pending.")
     var fullRecap = recapText + resultText
     
-    // Add untested reason if window was not tested (using optional chaining for backward compatibility)
-    if window.isInaccessible, let reason = window.value(forKey: "untestedReason") as? String, !reason.isEmpty {
+    if window.isInaccessible, window.entity.attributesByName["untestedReason"] != nil,
+       let reason = window.value(forKey: "untestedReason") as? String, !reason.isEmpty {
         fullRecap += "\nReason: \(reason)"
     }
-    let textRect = CGRect(x: 60, y: currentY, width: pageRect.width - 120, height: 100)
+    let recapHeight: CGFloat = 100
+    let textRect = CGRect(x: 60, y: currentY - recapHeight, width: pageRect.width - 120, height: recapHeight)
     fullRecap.draw(in: textRect, withAttributes: recapAttributes)
     
-    // Footer
+    // Footer at bottom of page
     let footerFont = NSFont.systemFont(ofSize: 10)
     let footerAttributes: [NSAttributedString.Key: Any] = [
         .font: footerFont,
         .foregroundColor: NSColor.gray
     ]
-    // Use cleaned address if available, fallback to original
     let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
     let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
-    let footerY = pageRect.height - 50
+    let footerY: CGFloat = 50
     address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
     let pageText = "Page \(pageNumber) of \(totalPages)"
     let pageTextSize = pageText.size(withAttributes: footerAttributes)
@@ -1124,116 +1273,20 @@ struct FieldResultsPackage {
     
     private func drawSection(context: CGContext, pageRect: CGRect, title: String, startY: CGFloat, window: Window, job: Job) -> CGFloat {
         var currentY = startY
-        
-        // Section header
         currentY = drawSectionHeader(context: context, pageRect: pageRect, title: title, startY: currentY)
-        currentY += 2  // Reduced from 5 to 2 for tighter spacing after header
+        currentY -= 4
         
         let font = NSFont.systemFont(ofSize: 11)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: NSColor.black
         ]
-        
         let labelAttributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.boldSystemFont(ofSize: 11),
             .foregroundColor: NSColor.black
         ]
-        
-        // Test Results
-        "Test Results:".draw(at: CGPoint(x: 60, y: currentY), withAttributes: labelAttributes)
-        getDisplayTestResult(for: window).draw(at: CGPoint(x: 200, y: currentY), withAttributes: attributes)
-        currentY += 18
-        
-        // Water Pressure
-        "Water Pressure:".draw(at: CGPoint(x: 60, y: currentY), withAttributes: labelAttributes)
-        let waterPressure = job.waterPressure > 0 ? job.waterPressure : 12.0
-        "\(Int(waterPressure)) PSI".draw(at: CGPoint(x: 200, y: currentY), withAttributes: attributes)
-        currentY += 18
-        
-        // Deviation
-        "Deviation:".draw(at: CGPoint(x: 60, y: currentY), withAttributes: labelAttributes)
-        "None".draw(at: CGPoint(x: 200, y: currentY), withAttributes: attributes)
-        currentY += 18
-        
-        // Size Requirements
-        "Size Requirements:".draw(at: CGPoint(x: 60, y: currentY), withAttributes: labelAttributes)
-        "None".draw(at: CGPoint(x: 200, y: currentY), withAttributes: attributes)
-        currentY += 18
-        
-        // Description
-        "Description:".draw(at: CGPoint(x: 60, y: currentY), withAttributes: labelAttributes)
-        let description = "Residential \(window.windowType ?? "Window") - \(window.material ?? "Unknown Material")"
-        description.draw(at: CGPoint(x: 200, y: currentY), withAttributes: attributes)
-        currentY += 18
-        
-        // Window photo placeholder (embedded on right side)
-        // For now, we'll leave space for it - photos will be on separate pages
-        
-        return currentY + 10
-    }
-    
-    private func drawSectionB(context: CGContext, pageRect: CGRect, title: String, startY: CGFloat, window: Window, job: Job) -> CGFloat {
-        var currentY = startY
-        
-        currentY = drawSectionHeader(context: context, pageRect: pageRect, title: title, startY: currentY)
-        currentY += 2  // Reduced from 5 to 2 for tighter spacing after header
-        
-        let font = NSFont.systemFont(ofSize: 11)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: NSColor.black
-        ]
-        
-        let labelAttributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.boldSystemFont(ofSize: 11),
-            .foregroundColor: NSColor.black
-        ]
-        
-        // Combine Manufacturer and Model on same line
-        let manufacturerModelText = "Manufacturer: Unknown  --  Model: Unknown"
-        let manufacturerModelRect = manufacturerModelText.boundingRect(with: CGSize(width: pageRect.width - 100, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attributes, context: nil)
-        manufacturerModelText.draw(in: CGRect(x: 60, y: currentY, width: pageRect.width - 100, height: manufacturerModelRect.height), withAttributes: attributes)
-        currentY += manufacturerModelRect.height + 18
-        
-        "Operation:".draw(at: CGPoint(x: 60, y: currentY), withAttributes: labelAttributes)
-        (window.windowType ?? "Unknown").draw(at: CGPoint(x: 200, y: currentY), withAttributes: attributes)
-        currentY += 18
-        
-        if window.width > 0 && window.height > 0 {
-            "Width:".draw(at: CGPoint(x: 60, y: currentY), withAttributes: labelAttributes)
-            String(format: "%.1f\"", window.width).draw(at: CGPoint(x: 200, y: currentY), withAttributes: attributes)
-            currentY += 18
-            
-            "Height:".draw(at: CGPoint(x: 60, y: currentY), withAttributes: labelAttributes)
-            String(format: "%.1f\"", window.height).draw(at: CGPoint(x: 200, y: currentY), withAttributes: attributes)
-            currentY += 18
-        }
-        
-        return currentY + 10
-    }
-    
-    private func drawSectionC(context: CGContext, pageRect: CGRect, title: String, startY: CGFloat, window: Window, job: Job) -> CGFloat {
-        var currentY = startY
-        
-        currentY = drawSectionHeader(context: context, pageRect: pageRect, title: title, startY: currentY)
-        currentY += 2  // Reduced from 5 to 2 for tighter spacing after header
-        
-        let font = NSFont.systemFont(ofSize: 11)
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: NSColor.black
-        ]
-        
-        let labelAttributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.boldSystemFont(ofSize: 11),
-            .foregroundColor: NSColor.black
-        ]
-        
         let labelStartX: CGFloat = 60
-        let labelValuePadding: CGFloat = 15
-        
-        // Helper function to draw label and value with dynamic positioning
+        let labelValuePadding: CGFloat = 8
         func drawLabelValue(label: String, value: String, y: CGFloat) {
             label.draw(at: CGPoint(x: labelStartX, y: y), withAttributes: labelAttributes)
             let labelWidth = label.size(withAttributes: labelAttributes).width
@@ -1241,58 +1294,137 @@ struct FieldResultsPackage {
             value.draw(at: CGPoint(x: valueX, y: y), withAttributes: attributes)
         }
         
-        // Use cleaned address if available, fallback to original
-        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
-        let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip)
-        drawLabelValue(label: "Location:", value: address, y: currentY)
-        currentY += 18
+        drawLabelValue(label: "Test Results:", value: getDisplayTestResult(for: window), y: currentY)
+        currentY -= 15
         
-        let exteriorFinishes = "Glass, \(window.material ?? "Unknown"), Framed Windows"
-        drawLabelValue(label: "Exterior Finishes:", value: exteriorFinishes, y: currentY)
-        currentY += 18
+        let waterPressure = job.waterPressure > 0 ? job.waterPressure : 12.0
+        drawLabelValue(label: "Water Pressure:", value: "\(Int(waterPressure)) PSI", y: currentY)
+        currentY -= 15
         
-        drawLabelValue(label: "Interior Finishes:", value: "Drywall", y: currentY)
-        currentY += 18
+        drawLabelValue(label: "Deviation:", value: "None", y: currentY)
+        currentY -= 15
         
-        drawLabelValue(label: "SF/CW Window Design Pressure:", value: "Unknown", y: currentY)
-        currentY += 18
+        drawLabelValue(label: "Size Requirements:", value: "None", y: currentY)
+        currentY -= 15
         
-        drawLabelValue(label: "Building Pressure - Corner (PSF):", value: "Unknown", y: currentY)
-        currentY += 18
+        let description = "Residential \(window.windowType ?? "Window") - \(window.material ?? "Unknown Material")"
+        drawLabelValue(label: "Description:", value: description, y: currentY)
+        currentY -= 15
         
-        drawLabelValue(label: "Building Pressure - Field (PSF):", value: "Unknown", y: currentY)
-        currentY += 18
-        
-        drawLabelValue(label: "Building Corner Distance (Feet):", value: "Unknown", y: currentY)
-        currentY += 18
-        
-        drawLabelValue(label: "Specimen Plumb, Level and Square:", value: "Yes, within industry standards", y: currentY)
-        currentY += 18
-        
-        return currentY + 10
+        return currentY - 8
     }
     
-    private func drawSectionD(context: CGContext, pageRect: CGRect, title: String, startY: CGFloat, window: Window, job: Job) -> CGFloat {
+    private func drawSectionB(context: CGContext, pageRect: CGRect, title: String, startY: CGFloat, window: Window, job: Job) -> CGFloat {
         var currentY = startY
-        
         currentY = drawSectionHeader(context: context, pageRect: pageRect, title: title, startY: currentY)
-        currentY += 2  // Reduced from 5 to 2 for tighter spacing after header
+        currentY -= 4
         
         let font = NSFont.systemFont(ofSize: 11)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: NSColor.black
         ]
-        
         let labelAttributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.boldSystemFont(ofSize: 11),
             .foregroundColor: NSColor.black
         ]
-        
         let labelStartX: CGFloat = 60
-        let labelValuePadding: CGFloat = 15
+        let labelValuePadding: CGFloat = 8
+        func drawLabelValue(label: String, value: String, y: CGFloat) {
+            label.draw(at: CGPoint(x: labelStartX, y: y), withAttributes: labelAttributes)
+            let labelWidth = label.size(withAttributes: labelAttributes).width
+            let valueX = labelStartX + labelWidth + labelValuePadding
+            value.draw(at: CGPoint(x: valueX, y: y), withAttributes: attributes)
+        }
         
-        // Helper function to draw label and value with dynamic positioning
+        let manufacturerModelText = "Manufacturer: Unknown -- Model: Unknown"
+        let manufacturerModelRect = manufacturerModelText.boundingRect(with: CGSize(width: pageRect.width - 120, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attributes, context: nil)
+        manufacturerModelText.draw(in: CGRect(x: 60, y: currentY - manufacturerModelRect.height, width: pageRect.width - 120, height: manufacturerModelRect.height), withAttributes: attributes)
+        currentY -= manufacturerModelRect.height + 15
+        
+        drawLabelValue(label: "Operation:", value: window.windowType ?? "Unknown", y: currentY)
+        currentY -= 15
+        
+        if window.width > 0 && window.height > 0 {
+            drawLabelValue(label: "Width:", value: String(format: "%.1f\"", window.width), y: currentY)
+            currentY -= 15
+            
+            drawLabelValue(label: "Height:", value: String(format: "%.1f\"", window.height), y: currentY)
+            currentY -= 15
+        }
+        
+        return currentY - 8
+    }
+    
+    private func drawSectionC(context: CGContext, pageRect: CGRect, title: String, startY: CGFloat, window: Window, job: Job) -> CGFloat {
+        var currentY = startY
+        currentY = drawSectionHeader(context: context, pageRect: pageRect, title: title, startY: currentY)
+        currentY -= 4
+        
+        let font = NSFont.systemFont(ofSize: 11)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.black
+        ]
+        let labelAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: 11),
+            .foregroundColor: NSColor.black
+        ]
+        let labelStartX: CGFloat = 60
+        let labelValuePadding: CGFloat = 8
+        func drawLabelValue(label: String, value: String, y: CGFloat) {
+            label.draw(at: CGPoint(x: labelStartX, y: y), withAttributes: labelAttributes)
+            let labelWidth = label.size(withAttributes: labelAttributes).width
+            let valueX = labelStartX + labelWidth + labelValuePadding
+            value.draw(at: CGPoint(x: valueX, y: y), withAttributes: attributes)
+        }
+        
+        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+        let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip)
+        drawLabelValue(label: "Location:", value: address, y: currentY)
+        currentY -= 15
+        
+        let exteriorFinishes = "Glass, \(window.material ?? "Unknown"), Framed Windows"
+        drawLabelValue(label: "Exterior Finishes:", value: exteriorFinishes, y: currentY)
+        currentY -= 15
+        
+        drawLabelValue(label: "Interior Finishes:", value: "Drywall", y: currentY)
+        currentY -= 15
+        
+        drawLabelValue(label: "SF/CW Window Design Pressure:", value: "Unknown", y: currentY)
+        currentY -= 15
+        
+        drawLabelValue(label: "Building Pressure - Corner (PSF):", value: "Unknown", y: currentY)
+        currentY -= 15
+        
+        drawLabelValue(label: "Building Pressure - Field (PSF):", value: "Unknown", y: currentY)
+        currentY -= 15
+        
+        drawLabelValue(label: "Building Corner Distance (Feet):", value: "Unknown", y: currentY)
+        currentY -= 15
+        
+        drawLabelValue(label: "Specimen Plumb, Level and Square:", value: "Yes, within industry standards", y: currentY)
+        currentY -= 15
+        
+        return currentY - 8
+    }
+    
+    private func drawSectionD(context: CGContext, pageRect: CGRect, title: String, startY: CGFloat, window: Window, job: Job) -> CGFloat {
+        var currentY = startY
+        currentY = drawSectionHeader(context: context, pageRect: pageRect, title: title, startY: currentY)
+        currentY -= 4
+        
+        let font = NSFont.systemFont(ofSize: 11)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.black
+        ]
+        let labelAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: 11),
+            .foregroundColor: NSColor.black
+        ]
+        let labelStartX: CGFloat = 60
+        let labelValuePadding: CGFloat = 8
         func drawLabelValue(label: String, value: String, y: CGFloat) {
             label.draw(at: CGPoint(x: labelStartX, y: y), withAttributes: labelAttributes)
             let labelWidth = label.size(withAttributes: labelAttributes).width
@@ -1301,35 +1433,30 @@ struct FieldResultsPackage {
         }
         
         drawLabelValue(label: "Specimen Age:", value: "Over 6 Months", y: currentY)
-        currentY += 18
+        currentY -= 15
         
         drawLabelValue(label: "Modifications Prior to Test:", value: "None", y: currentY)
-        currentY += 18
+        currentY -= 15
         
-        return currentY + 10
+        return currentY - 8
     }
     
     private func drawSectionE(context: CGContext, pageRect: CGRect, title: String, startY: CGFloat, window: Window, job: Job) -> CGFloat {
         var currentY = startY
-        
         currentY = drawSectionHeader(context: context, pageRect: pageRect, title: title, startY: currentY)
-        currentY += 2  // Reduced from 5 to 2 for tighter spacing after header
+        currentY -= 4
         
         let font = NSFont.systemFont(ofSize: 11)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: NSColor.black
         ]
-        
         let labelAttributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.boldSystemFont(ofSize: 11),
             .foregroundColor: NSColor.black
         ]
-        
         let labelStartX: CGFloat = 60
-        let labelValuePadding: CGFloat = 15
-        
-        // Helper function to draw label and value with dynamic positioning
+        let labelValuePadding: CGFloat = 8
         func drawLabelValue(label: String, value: String, y: CGFloat) {
             label.draw(at: CGPoint(x: labelStartX, y: y), withAttributes: labelAttributes)
             let labelWidth = label.size(withAttributes: labelAttributes).width
@@ -1338,20 +1465,19 @@ struct FieldResultsPackage {
         }
         
         let temp = job.temperature > 0 ? job.temperature : 73.0
-        drawLabelValue(label: "Temperature (F):", value: String(format: "%.0f °F  --  ", temp), y: currentY)
-        currentY += 18
+        drawLabelValue(label: "Temperature (F):", value: String(format: "%.0f °F", temp), y: currentY)
+        currentY -= 15
         
         let windSpeed = job.windSpeed > 0 ? job.windSpeed : 5.0
         drawLabelValue(label: "Wind Speed/Direction (mph):", value: String(format: "%.0f mph", windSpeed), y: currentY)
-        currentY += 18
+        currentY -= 15
         
-        // Combine Barometric Pressure and Precipitation on same line
-        let barometricPrecipText = "Barometric Pressure (inHg): 29 inHg  --  Precipitation: 0%"
-        let barometricPrecipRect = barometricPrecipText.boundingRect(with: CGSize(width: pageRect.width - 100, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attributes, context: nil)
-        barometricPrecipText.draw(in: CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: barometricPrecipRect.height), withAttributes: attributes)
-        currentY += barometricPrecipRect.height + 18
+        let barometricPrecipText = "Barometric Pressure (inHg): 29 inHg -- Precipitation: 0%"
+        let barometricPrecipRect = barometricPrecipText.boundingRect(with: CGSize(width: pageRect.width - 120, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attributes, context: nil)
+        barometricPrecipText.draw(in: CGRect(x: 60, y: currentY - barometricPrecipRect.height, width: pageRect.width - 120, height: barometricPrecipRect.height), withAttributes: attributes)
+        currentY -= barometricPrecipRect.height + 15
         
-        return currentY + 10
+        return currentY - 8
     }
     
     private func drawCoverPage(context: CGContext, pageRect: CGRect, job: Job) {
@@ -1409,163 +1535,48 @@ struct FieldResultsPackage {
             drawNSImage(image, in: imageRectBottomUp, context: context)
         }
         
-        // Add "Prepared for:", "Owner Name:", and "Address:" labels
-        // Position from top: 1 inch = 72 points
-        let trimmedClient = job.clientName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown"
-        let ownerName = job.clientName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown"
-        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+        // Match iOS: three lines only (no labels) at bottom of page
+        let ownerName = job.clientName ?? "Unknown"
+        let addressLine1 = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+        let addressLine2 = formatAddressForExport(addressLine1: "", city: job.city, state: job.state, zip: job.zip)
         
-        // Format address line 2 (city, state zip)
-        var addressLine2Components: [String] = []
-        if let city = job.city?.trimmingCharacters(in: .whitespacesAndNewlines), !city.isEmpty {
-            addressLine2Components.append(city + ",")
-        }
-        if let state = job.state?.trimmingCharacters(in: .whitespacesAndNewlines), !state.isEmpty {
-            addressLine2Components.append(state)
-        }
-        if let zip = job.zip?.trimmingCharacters(in: .whitespacesAndNewlines), !zip.isEmpty {
-            addressLine2Components.append(zip)
-        }
-        let addressLine2 = addressLine2Components.joined(separator: " ")
-        
-        // Font styling matching DOCX export (size 14, color #10325d)
-        let textFont = NSFont.systemFont(ofSize: 14)
-        let textAttributes: [NSAttributedString.Key: Any] = [
-            .font: textFont,
-            .foregroundColor: NSColor(red: 16/255.0, green: 50/255.0, blue: 93/255.0, alpha: 1.0)  // Color #10325d
+        let largeFont = NSFont.boldSystemFont(ofSize: 18)
+        let largeAttributes: [NSAttributedString.Key: Any] = [
+            .font: largeFont,
+            .foregroundColor: NSColor.black
         ]
         
-        // Position from top: 1 inch = 72 points
-        // X position: 0.83 inches = 60 points from left (matching DOCX)
-        // NOTE: Swapped order due to PDF rendering being backwards - Address first in code to render last
-        let xPosition: CGFloat = 60
-        let addressY: CGFloat = 72  // 1 inch from top (first in code, should render last/bottom)
-        let ownerNameY: CGFloat = 90    // 1.25 inches from top (second in code, should render middle)
-        let preparedForY: CGFloat = 108     // 1.5 inches from top (last in code, should render first/top)
+        // Position at bottom of page - PDF origin is bottom-left, Y grows upward.
+        // Match iOS visual order from top to bottom: client name, address line 1, city/state/zip.
+        // So draw bottom line (city/state/zip) at lowest Y, then address, then client at highest Y.
+        let bottomMargin: CGFloat = 152 - Self.layoutShiftDown - 25  // Extra 25pt for cover page
+        let lineHeight = largeFont.lineHeight
+        let spacing: CGFloat = 8
+        let addressLine2Y = bottomMargin
+        let addressLine1Y = addressLine2Y + lineHeight + 4
+        let ownerNameY = addressLine1Y + lineHeight + spacing
         
-        // Draw "Address:" label and address line 1 (first in code, should render last/bottom)
-        let addressLabel = "Address:"
-        addressLabel.draw(at: CGPoint(x: xPosition, y: addressY), withAttributes: textAttributes)
-        if !addressToUse.isEmpty {
-            addressToUse.draw(at: CGPoint(x: xPosition + 100, y: addressY), withAttributes: textAttributes)
-        }
-        
-        // Draw address line 2 (city, state zip) below address line 1
-        // Use font lineHeight like WindowTest, but subtract due to backwards rendering
-        if !addressLine2.isEmpty {
-            let addressLine2Y = addressY - (textFont.lineHeight + 4)  // Subtract instead of add due to backwards rendering
-            addressLine2.draw(at: CGPoint(x: xPosition + 100, y: addressLine2Y), withAttributes: textAttributes)
-        }
-        
-        // Draw "Owner Name:" label and owner name (second in code, should render middle)
-        let ownerNameLabel = "Owner Name:"
-        ownerNameLabel.draw(at: CGPoint(x: xPosition, y: ownerNameY), withAttributes: textAttributes)
-        ownerName.draw(at: CGPoint(x: xPosition + 100, y: ownerNameY), withAttributes: textAttributes)
-        
-        // Draw "Prepared for:" label and client name (last in code, should render first/top)
-        let preparedForLabel = "Prepared for:"
-        preparedForLabel.draw(at: CGPoint(x: xPosition, y: preparedForY), withAttributes: textAttributes)
-        trimmedClient.draw(at: CGPoint(x: xPosition + 100, y: preparedForY), withAttributes: textAttributes)
+        addressLine2.draw(at: CGPoint(x: 50, y: addressLine2Y), withAttributes: largeAttributes)
+        addressLine1.draw(at: CGPoint(x: 50, y: addressLine1Y), withAttributes: largeAttributes)
+        ownerName.draw(at: CGPoint(x: 50, y: ownerNameY), withAttributes: largeAttributes)
     }
     
     private func drawOverviewPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
-        // Layout: Title -> Address subtitle -> Image -> Metadata
+        // Match iOS: Title -> Metadata (above image) -> Image -> Footer (no address under title)
+        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
         
-        // 1. Title "OVERVIEW" - moved down ~50 points from very top
+        // 1. Title "OVERVIEW" at top
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
             .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
-        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80
-        // Use backwards coordinate technique - bottom Y to render at top
-        let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
+        let titleTopFromTop: CGFloat = 30 + Self.layoutShiftDown
+        let titleRect = CGRect(x: 50, y: pageRect.height - titleTopFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "OVERVIEW".draw(in: titleRect, withAttributes: titleAttributes)
         
-        // 2. Address subtitle - directly below title in smaller dark blue font
-        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
-        if !addressToUse.isEmpty {
-            let addressSubtitleFont = NSFont.systemFont(ofSize: 14)
-            let addressSubtitleAttributes: [NSAttributedString.Key: Any] = [
-                .font: addressSubtitleFont,
-                .foregroundColor: NSColor(red: 16/255.0, green: 50/255.0, blue: 93/255.0, alpha: 1.0)  // Dark blue #10325d
-            ]
-            // Position address subtitle below title - use backwards calculation
-            let addressSubtitleY = pageRect.height - (titleYFromTop + titleHeight + 20)  // 20 points below title
-            addressToUse.draw(at: CGPoint(x: 50, y: addressSubtitleY), withAttributes: addressSubtitleAttributes)
-        }
-        
-        // 3. Load and draw overhead image - positioned below address subtitle
-        var overheadImage: NSImage?
-        if let imagePath = job.overheadImagePath {
-            let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            let imageURL = documentsDirectory.appendingPathComponent("overhead_images").appendingPathComponent(imagePath)
-            if FileManager.default.fileExists(atPath: imageURL.path) {
-                overheadImage = NSImage(contentsOfFile: imageURL.path)
-            }
-        }
-        
-        // Calculate image position - below address subtitle, above metadata
-        var imageBottomY: CGFloat = 0
-        var imageHeight: CGFloat = 0
-        var imageX: CGFloat = 0
-        var imageWidth: CGFloat = 0
-        
-        if let image = overheadImage {
-            // Image size: Use fixed maximum size - doubled to match user request
-            let maxDimension: CGFloat = 360  // Maximum 360 points for largest dimension (doubled from 180)
-            let imageAspectRatio = image.size.width / image.size.height
-            
-            // Calculate size maintaining aspect ratio, constrained to maxDimension
-            if imageAspectRatio > 1.0 {
-                // Landscape: constrain width
-                imageWidth = maxDimension
-                imageHeight = maxDimension / imageAspectRatio
-            } else {
-                // Portrait or square: constrain height
-                imageHeight = maxDimension
-                imageWidth = maxDimension * imageAspectRatio
-            }
-            
-            imageX = (pageRect.width - imageWidth) / 2
-            
-            // Position image between address subtitle and metadata
-            // Address subtitle is drawn at: pageRect.height - (titleYFromTop + titleHeight + 20)
-            // In top-down terms, address subtitle top is at: titleYFromTop + titleHeight + 20 from top
-            // Image should be positioned 20 points below address subtitle (top-down)
-            let imageTopFromTop = titleYFromTop + titleHeight + 20 + 20  // Title + spacing + address + spacing
-            let imageTopYTopDown = imageTopFromTop
-            
-            // Metadata starts at: pageRect.height - (titleYFromTop + titleHeight + 660)
-            // In top-down terms: titleYFromTop + titleHeight + 660 from top
-            let metadataTopFromTop = titleYFromTop + titleHeight + 660
-            
-            // Ensure image doesn't overlap metadata - leave at least 30 points gap
-            let maxImageBottomFromTop = metadataTopFromTop - 30
-            let imageBottomFromTop = imageTopFromTop + imageHeight
-            
-            // If image would overlap metadata, shrink it
-            if imageBottomFromTop > maxImageBottomFromTop {
-                let availableHeight = maxImageBottomFromTop - imageTopFromTop
-                if availableHeight > 0 && availableHeight < imageHeight {
-                    imageHeight = availableHeight
-                    imageWidth = imageHeight * imageAspectRatio
-                    imageX = (pageRect.width - imageWidth) / 2
-                }
-            }
-            
-            // Convert to bottom-up coordinates for drawing
-            imageBottomY = pageRect.height - imageTopYTopDown - imageHeight
-        }
-        
-        // Draw image BEFORE metadata (due to backwards rendering, this makes it appear above metadata)
-        if let image = overheadImage {
-            let imageRect = CGRect(x: imageX, y: imageBottomY, width: imageWidth, height: imageHeight)
-            drawNSImage(image, in: imageRect, context: context)
-        }
-        
-        // 4. Draw metadata fields - positioned below image
+        // 2. Metadata block right below title (same order as iOS: REPORT NUMBER, DATE, PREPARED FOR, PREPARED BY, ADDRESS)
         let metadataFont = NSFont.systemFont(ofSize: 11)
         let metadataLabelFont = NSFont.boldSystemFont(ofSize: 11)
         let metadataAttributes: [NSAttributedString.Key: Any] = [
@@ -1576,57 +1587,58 @@ struct FieldResultsPackage {
             .font: metadataLabelFont,
             .foregroundColor: NSColor.black
         ]
-        
-        // Calculate metadata start position - use hacky but working adjustment
-        // This works with backwards rendering - subtract large value to position metadata correctly
-        // Reduced from 660 to 600 to move metadata up (make room for footer at bottom)
-        let metadataStartY = pageRect.height - (titleYFromTop + titleHeight + 600)  // Reduced to move metadata up
+        let metadataStartY = pageRect.height - titleTopFromTop - titleHeight - 20  // 20pt below title
         var currentY = metadataStartY
         
-        // Format date
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "MMM d, yyyy"
         let inspectionDateString = job.inspectionDate != nil ? dateFormatter.string(from: job.inspectionDate!) : "N/A"
-        
         let ownerAddress = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip)
         
-        // Draw metadata fields - REVERSED ORDER due to backwards PDF rendering
-        // Draw in reverse order so they appear in correct order visually
-        // ADDRESS first in code (should render last/bottom)
-        "ADDRESS:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
-        ownerAddress.draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
-        currentY += 25
-        
-        // PREPARED BY third in code (should render third from bottom)
-        "PREPARED BY:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
-        (job.inspectorName ?? "Unknown").draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
-        currentY += 25
-        
-        // PREPARED FOR fourth in code (should render fourth from bottom)
-        "PREPARED FOR:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
-        (job.clientName ?? "Unknown").draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
-        currentY += 25
-        
-        // DATE OF INSPECTIONS fifth in code (should render second from top)
-        "DATE OF INSPECTIONS:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
-        inspectionDateString.draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
-        currentY += 25
-        
-        // REPORT NUMBER last in code (should render first/top)
         "REPORT NUMBER:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
         (job.jobId ?? "Unknown").draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
+        currentY -= 25
         
-        // Footer at bottom - use small Y value for backwards rendering (small Y = bottom of page)
+        "DATE OF INSPECTIONS:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
+        inspectionDateString.draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
+        currentY -= 25
+        
+        "PREPARED FOR:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
+        (job.clientName ?? "Unknown").draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
+        currentY -= 25
+        
+        "PREPARED BY:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
+        (job.inspectorName ?? "Unknown").draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
+        currentY -= 25
+        
+        "ADDRESS:".draw(at: CGPoint(x: 50, y: currentY), withAttributes: metadataLabelAttributes)
+        ownerAddress.draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
+        currentY -= 25
+        
+        // 3. Load and draw overhead image below metadata (~1/3 page height, matching iOS)
+        let overheadImage = loadOverheadImageForExport(job: job)
+        
+        if let image = overheadImage {
+            let targetHeight: CGFloat = pageRect.height / 3
+            let imageWidth = targetHeight * (image.size.width / image.size.height)
+            let imageHeight = targetHeight
+            let imageX = (pageRect.width - imageWidth) / 2
+            // Image top (in from-top terms): metadata ends at currentY (lowest of the 5 lines). currentY is now 80 - 125 = -45? No - we started at metadataStartY = pageRect.height - 80, then went currentY -= 25 four times, so currentY = pageRect.height - 180. So bottom of metadata block is at pageRect.height - 180. Image should start 150pt below title in iOS terms: title at 60 from top, metadata to 60+20+125=205 from top, image at 205+150=355 from top. So imageTopFromTop = 355, imageBottomY = pageRect.height - 355 - imageHeight.
+            let imageTopFromTop: CGFloat = 355
+            let imageBottomY = pageRect.height - imageTopFromTop - imageHeight
+            let imageRect = CGRect(x: imageX, y: imageBottomY, width: imageWidth, height: imageHeight)
+            drawOverheadImage(image, in: imageRect, context: context, job: job)
+        }
+        
+        // 4. Footer at bottom
         let footerFont = NSFont.systemFont(ofSize: 10)
         let footerAttributes: [NSAttributedString.Key: Any] = [
             .font: footerFont,
             .foregroundColor: NSColor.gray
         ]
-        
         let address = "\(addressToUse), \(job.city ?? ""), \(job.state ?? "") \(job.zip ?? "")".uppercased()
-        let footerY: CGFloat = 50  // Small Y value = bottom of page (due to backwards rendering)
+        let footerY: CGFloat = 50
         address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-        
         let pageText = "Page \(pageNumber) of \(totalPages)"
         let pageTextSize = pageText.size(withAttributes: footerAttributes)
         pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
@@ -1647,72 +1659,73 @@ struct FieldResultsPackage {
     }
     
     private func drawEngineeringLetterPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
-        // Title at top - "ENGINEERING LETTER" - moved down ~50 points
-        let titleFont = NSFont.boldSystemFont(ofSize: 24)
+        // Title at top - "ENGINEERING LETTER" - match iOS: 20pt, y=30 from top
+        let titleFont = NSFont.boldSystemFont(ofSize: 20)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
-            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
+            .foregroundColor: NSColor(red: 0.0, green: 0.2, blue: 0.4, alpha: 1.0)  // iOS blue
         ]
         let titleHeight: CGFloat = 30
-        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
+        let titleYFromTop: CGFloat = 70   //55   larger num is farther down the page // Moved down to avoid overlap with disclaimer
         // Use backwards coordinate technique - bottom Y to render at top
         let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "ENGINEERING LETTER".draw(in: titleRect, withAttributes: titleAttributes)
         
-        var currentY = titleRect.maxY + 20
+        // PDF Y increases upward; content below title = smaller Y (match iOS: titleRect.maxY + 20)
+        var currentY = titleRect.minY - 20
         
-        // Date
+        // Date - match iOS (10pt, 40pt after)
         let dateFormatter = DateFormatter()
         dateFormatter.dateStyle = .medium
         let dateString = job.inspectionDate.map { dateFormatter.string(from: $0) } ?? dateFormatter.string(from: Date())
-        let dateFont = NSFont.systemFont(ofSize: 12)
+        let dateFont = NSFont.systemFont(ofSize: 10)
         let dateAttributes: [NSAttributedString.Key: Any] = [
             .font: dateFont,
             .foregroundColor: NSColor.black
         ]
         dateString.draw(at: CGPoint(x: 50, y: currentY), withAttributes: dateAttributes)
-        currentY += 40  // Added one line after date
+        currentY -= 40  // Match iOS: one line after date
         
-        // Recipient information
-        let recipientFont = NSFont.systemFont(ofSize: 12)
+        // Recipient information - match iOS (10pt, 15pt per line)
+        let recipientFont = NSFont.systemFont(ofSize: 10)
         let recipientAttributes: [NSAttributedString.Key: Any] = [
             .font: recipientFont,
             .foregroundColor: NSColor.black
         ]
         let clientName = job.clientName ?? "Unknown"
         clientName.draw(at: CGPoint(x: 50, y: currentY), withAttributes: recipientAttributes)
-        currentY += 15
+        currentY -= 15
         
-        // Use cleaned address if available, fallback to original
-        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+        // Match iOS: prefer addressLine1 (full original) over cleanedAddressLine1
+        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
         if !addressToUse.isEmpty {
             addressToUse.draw(at: CGPoint(x: 50, y: currentY), withAttributes: recipientAttributes)
-            currentY += 15
+            currentY -= 15
         }
         
         let cityStateZip = formatAddressForExport(addressLine1: "", city: job.city, state: job.state, zip: job.zip)
         if !cityStateZip.isEmpty {
             cityStateZip.draw(at: CGPoint(x: 50, y: currentY), withAttributes: recipientAttributes)
-            currentY += 40  // Added one line after client address
+            currentY -= 40  // Match iOS: one line after client address
         }
         
-        // Sender information
-        let senderFont = NSFont.systemFont(ofSize: 12)
+        // Sender information - match iOS (10pt, 15pt, 20pt, 15pt, 15pt, 45pt before salutation)
+        let senderFont = NSFont.systemFont(ofSize: 10)
         let senderAttributes: [NSAttributedString.Key: Any] = [
             .font: senderFont,
             .foregroundColor: NSColor.black
         ]
         "K. Renevier, P.E.".draw(at: CGPoint(x: 50, y: currentY), withAttributes: senderAttributes)
-        currentY += 15
+        currentY -= 15
         "FL Reg. No. 98372".draw(at: CGPoint(x: 50, y: currentY), withAttributes: senderAttributes)
-        currentY += 20
+        currentY -= 20
         "1281 Trailhead Pl".draw(at: CGPoint(x: 50, y: currentY), withAttributes: senderAttributes)
-        currentY += 15
+        currentY -= 15
         "Harrison, OH 45030".draw(at: CGPoint(x: 50, y: currentY), withAttributes: senderAttributes)
-        currentY += 30  // Extra space before salutation
+        currentY -= 45  // Match iOS: space before salutation
         
-        // Salutation
-        let salutationFont = NSFont.systemFont(ofSize: 12)
+        // Salutation - match iOS (10pt, 40pt after)
+        let salutationFont = NSFont.systemFont(ofSize: 10)
         let salutationAttributes: [NSAttributedString.Key: Any] = [
             .font: salutationFont,
             .foregroundColor: NSColor.black
@@ -1721,76 +1734,99 @@ struct FieldResultsPackage {
         let firstName = clientName.components(separatedBy: " ").first ?? clientName
         let salutation = "Greetings \(firstName),"
         salutation.draw(at: CGPoint(x: 50, y: currentY), withAttributes: salutationAttributes)
-        currentY += 40  // Added one line after Greetings
+        currentY -= 18 //38  // Space after salutation: "under my direct supervision" needs to come down
         
-        // Body paragraphs
-        let bodyFont = NSFont.systemFont(ofSize: 12)
+        // Body paragraphs - match iOS (10pt, lineSpacing 2)
+        let bodyFont = NSFont.systemFont(ofSize: 10)
         let bodyAttributes: [NSAttributedString.Key: Any] = [
             .font: bodyFont,
             .foregroundColor: NSColor.black
         ]
         let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = 2
+        paragraphStyle.lineSpacing = 2  // Match iOS
         paragraphStyle.alignment = .left
         var bodyAttributesWithSpacing = bodyAttributes
         bodyAttributesWithSpacing[.paragraphStyle] = paragraphStyle
+        bodyAttributesWithSpacing[.backgroundColor] = NSColor.clear  // Prevent opaque background from covering content above
         
-        // First paragraph
+        // Body paragraphs - use boundingRect for dynamic heights to avoid truncation
+        let contentWidth = pageRect.width - 100
+        
+        // First paragraph - use Works Cited pattern: rect.y = currentY - height so rect top is at currentY
         let paragraph1 = "True Reports Inc., in collaboration with my individual firm, has conducted an evaluation of the condition of the windows at the property located at \(addressToUse.isEmpty ? "the property" : addressToUse), as detailed in the attached report. The opinions presented in this report have been formulated within a reasonable degree of professional certainty. These opinions are based on a review of the available information, associated research, as well as our knowledge, training and experience. True Reports Inc. reserves the right to update this report should additional information become available. The True Reports Inc's investigation of the property at \(addressToUse.isEmpty ? "the property" : addressToUse) was performed by the True Reports Inc. Field Inspection Team under my direct supervision."
-        let paragraph1Rect = CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: 200)
+        let paragraph1Bounding = paragraph1.boundingRect(with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: bodyAttributesWithSpacing, context: nil)
+        let paragraph1Height = ceil(paragraph1Bounding.height) + 6  // Buffer to avoid clipping (matches drawBlock)
+        let paragraph1Rect = CGRect(x: 50, y: currentY - paragraph1Height, width: contentWidth, height: paragraph1Height)
         paragraph1.draw(in: paragraph1Rect, withAttributes: bodyAttributesWithSpacing)
-        currentY = paragraph1Rect.maxY - 30  // Reduced spacing before paragraph2
+        currentY -= paragraph1Height + 28  // Extra gap so paragraph2 doesn't cover "supervision" above
         
         // Second paragraph
         let paragraph2 = "It is my professional opinion that the property sustained damage to the windows of the building during Hurricane Milton. Windows will need to be repaired or replaced. All repairs must be in compliance with the Florida Building Code: Existing Building 2023."
-        let paragraph2Rect = CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: 100)
+        let paragraph2Bounding = paragraph2.boundingRect(with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: bodyAttributesWithSpacing, context: nil)
+        let paragraph2Height = ceil(paragraph2Bounding.height) + 2  // Buffer to avoid clipping (matches drawBlock)
+        let paragraph2Rect = CGRect(x: 50, y: currentY - paragraph2Height, width: contentWidth, height: paragraph2Height)
         paragraph2.draw(in: paragraph2Rect, withAttributes: bodyAttributesWithSpacing)
-        currentY = paragraph2Rect.maxY - 30  // Reduced spacing before paragraph3
+        currentY -= paragraph2Height + 12  // Match iOS: gap between body paragraphs
         
         // Third paragraph
         let paragraph3 = "True Reports Inc. appreciates the opportunity to assist with this inspection. Please call if you have any questions."
-        let paragraph3Rect = CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: 50)
+        let paragraph3Bounding = paragraph3.boundingRect(with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: bodyAttributesWithSpacing, context: nil)
+        let paragraph3Height = ceil(paragraph3Bounding.height) + 2  // Buffer to avoid clipping (matches drawBlock)
+        let paragraph3Rect = CGRect(x: 50, y: currentY - paragraph3Height, width: contentWidth, height: paragraph3Height)
         paragraph3.draw(in: paragraph3Rect, withAttributes: bodyAttributesWithSpacing)
-        currentY = paragraph3Rect.maxY + 20
+        currentY -= paragraph3Height + 12  // Match iOS: gap before closing
         
-        // Closing
-        let closingFont = NSFont.systemFont(ofSize: 12)
+        // Closing - match iOS (10pt, 30pt after)
+        let closingFont = NSFont.systemFont(ofSize: 10)
         let closingAttributes: [NSAttributedString.Key: Any] = [
             .font: closingFont,
             .foregroundColor: NSColor.black
         ]
         "Respectfully Submitted,".draw(at: CGPoint(x: 50, y: currentY), withAttributes: closingAttributes)
-        currentY += 30
+        currentY -= 40//30  // Match iOS
         
-        // Signatory information (left side)
-        let signatoryFont = NSFont.systemFont(ofSize: 12)
+        // Signatory information - match iOS order: K. Renevier first, then Stuart Jay Clarke (10pt, 20pt between)
+        let signatoryFont = NSFont.systemFont(ofSize: 10)
         let signatoryAttributes: [NSAttributedString.Key: Any] = [
             .font: signatoryFont,
             .foregroundColor: NSColor.black
         ]
-        "Stuart Jay Clarke".draw(at: CGPoint(x: 50, y: currentY), withAttributes: signatoryAttributes)
-        currentY += 20
         "K. Renevier, P.E.".draw(at: CGPoint(x: 50, y: currentY), withAttributes: signatoryAttributes)
+        currentY -= 20
+        "Stuart Jay Clarke".draw(at: CGPoint(x: 50, y: currentY), withAttributes: signatoryAttributes)
         
-        // Engineer seal image (right side)
+        // Engineer seal image (right side) - match iOS: 144pt (2 inches)
+        let sealSize: CGFloat = 144  // Exactly 2 inches (72 points per inch), match iOS
         if let sealImage = loadEngineerStampImage() {
-            let sealSize: CGFloat = 120 // Size of the circular seal
-            let sealX = pageRect.width - 50 - sealSize
-            let sealY = currentY - 40 - 45 // Raised up 3 rows (3 * 15 points)
-            let sealRect = CGRect(x: sealX, y: sealY, width: sealSize, height: sealSize)
+            let imageAspectRatio = sealImage.size.width / sealImage.size.height
+            let sealWidth: CGFloat
+            let sealHeight: CGFloat
+            if imageAspectRatio > 1.0 {
+                sealHeight = sealSize
+                sealWidth = sealSize * imageAspectRatio
+            } else if imageAspectRatio < 1.0 {
+                sealWidth = sealSize
+                sealHeight = sealSize / imageAspectRatio
+            } else {
+                sealWidth = sealSize
+                sealHeight = sealSize
+            }
+            let sealX = pageRect.width - 50 - sealWidth
+            let sealY = currentY - 40  // Lower on page (PDF Y increases upward; negative offset = down)
+            let sealRect = CGRect(x: sealX, y: sealY, width: sealWidth, height: sealHeight)
             drawNSImage(sealImage, in: sealRect, context: context)
         }
         
-        currentY += 30
-        
-        // Digital signature disclaimer
+        // Digital signature disclaimer - draw in flow below signatories, then fixed footer at bottom
         let disclaimerFont = NSFont.systemFont(ofSize: 10)
         let disclaimerAttributes: [NSAttributedString.Key: Any] = [
             .font: disclaimerFont,
             .foregroundColor: NSColor.black
         ]
         let disclaimerText = "Kyle Renevier, State of Florida, Professional Engineer, License No. 98372. This item has been digitally signed and sealed by Kyle Renevier on the date indicated here. Printed copies of this document are not considered signed and sealed and the signature must be verified on any electronic copies."
-        let disclaimerRect = CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: 80)
+        currentY -= 50  // Gap after signatories: moves "Kyle Renevier State of Florida" paragraph down
+        let disclaimerHeight: CGFloat = 80
+        let disclaimerRect = CGRect(x: 50, y: currentY - disclaimerHeight, width: pageRect.width - 100, height: disclaimerHeight)
         disclaimerText.draw(in: disclaimerRect, withAttributes: disclaimerAttributes)
         
         // Footer at bottom
@@ -1801,7 +1837,7 @@ struct FieldResultsPackage {
         ]
         
         let address = "\(addressToUse.isEmpty ? "" : addressToUse.uppercased()), \(job.city?.uppercased() ?? ""), \(job.state?.uppercased() ?? "") \(job.zip ?? "")".trimmingCharacters(in: CharacterSet(charactersIn: ", "))
-        let footerY = pageRect.height - 50
+        let footerY: CGFloat = 50
         if !address.isEmpty {
             address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         }
@@ -1812,42 +1848,38 @@ struct FieldResultsPackage {
     }
     
     private func drawSectionHeader(context: CGContext, pageRect: CGRect, title: String, startY: CGFloat) -> CGFloat {
-        // Header text - bold black text, no blue bar
+        // Header text - bold black text. PDF Y increases upward; startY is top of header, draw baseline at startY - lineHeight.
         let headerFont = NSFont.boldSystemFont(ofSize: 12)
         let headerAttributes: [NSAttributedString.Key: Any] = [
             .font: headerFont,
             .foregroundColor: NSColor.black
         ]
-        // Draw text at startY position
-        title.draw(at: CGPoint(x: 55, y: startY), withAttributes: headerAttributes)
-        
-        // Return position after text with spacing (font line height + spacing)
         let lineHeight = headerFont.lineHeight
-        return startY + lineHeight + 2  // Reduced from 5 to 2 for tighter spacing
+        title.draw(at: CGPoint(x: 55, y: startY - lineHeight), withAttributes: headerAttributes)
+        return startY - lineHeight - 8  // Clear gap below title so it doesn't overlap first data row
     }
     
     private func drawWindowTestingSummaryPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job, windows: [Window]) {
-        // Title at top - "WINDOW TESTING" - moved down ~50 points
+        // Title at top - "WINDOW TESTING" - position higher, with clear gap above blue box
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
             .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
-        let titleHeight: CGFloat = 30
-        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
-        // Use backwards coordinate technique - bottom Y to render at top
+        let titleHeight: CGFloat = 32  // Slight buffer to avoid clipping ascenders
+        let titleYFromTop: CGFloat = 50  // Closer to top so title is fully visible
         let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "WINDOW TESTING".draw(in: titleRect, withAttributes: titleAttributes)
         
-        // Calculate box dimensions
+        // Calculate box dimensions - PDF Y increases upward, so "below" title = decrease Y
         let boxMargin: CGFloat = 50
         let boxX = boxMargin
-        let boxTopY = titleRect.maxY + 30
+        let boxTopY = titleRect.minY - 45  // Top of blue bar, 45 pt below title (clear gap so box doesn't overlap)
         let boxWidth = pageRect.width - (boxMargin * 2)
         
-        // Blue header bar
+        // Blue header bar (extends downward from boxTopY)
         let headerBarHeight: CGFloat = 30
-        let headerBarRect = CGRect(x: boxX, y: boxTopY, width: boxWidth, height: headerBarHeight)
+        let headerBarRect = CGRect(x: boxX, y: boxTopY - headerBarHeight, width: boxWidth, height: headerBarHeight)
         context.setFillColor(NSColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1.0).cgColor)
         context.fill(headerBarRect)
         
@@ -1860,11 +1892,11 @@ struct FieldResultsPackage {
         let headerText = "Window Testing Summary"
         let headerTextSize = headerText.size(withAttributes: headerTextAttributes)
         let headerTextX = boxX + 10
-        let headerTextY = boxTopY + (headerBarHeight - headerTextSize.height) / 2
+        let headerTextY = boxTopY - headerBarHeight + (headerBarHeight - headerTextSize.height) / 2
         headerText.draw(at: CGPoint(x: headerTextX, y: headerTextY), withAttributes: headerTextAttributes)
         
-        // Address below header bar
-        let addressY = boxTopY + headerBarHeight + 10
+        // Address below header bar - add padding so address isn't cramped under blue bar
+        let addressY = boxTopY - headerBarHeight - 22
         let addressFont = NSFont.systemFont(ofSize: 11)
         let addressAttributes: [NSAttributedString.Key: Any] = [
             .font: addressFont,
@@ -1887,8 +1919,8 @@ struct FieldResultsPackage {
         let addressString = addressComponents.joined(separator: ", ")
         addressString.draw(at: CGPoint(x: boxX + 10, y: addressY), withAttributes: addressAttributes)
         
-        // Table setup
-        let tableStartY = addressY + 20
+        // Table setup - below address (decrease Y) - add padding so table isn't cramped under address
+        let tableStartY = addressY - 28
         let rowHeight: CGFloat = 25
         let headerRowHeight: CGFloat = 25
         
@@ -1897,7 +1929,7 @@ struct FieldResultsPackage {
         let totalTableWidth = colWidths.reduce(0, +)
         let tableX = boxX + (boxWidth - totalTableWidth) / 2
         
-        // Table header row
+        // Table header row - add padding from top of table area
         let headerFontSize = NSFont.boldSystemFont(ofSize: 11)
         let headerRowAttributes: [NSAttributedString.Key: Any] = [
             .font: headerFontSize,
@@ -1906,19 +1938,19 @@ struct FieldResultsPackage {
         let headers = ["Results", "Window", "Time: Start", "Time: Stop"]
         var currentX = tableX
         for (index, header) in headers.enumerated() {
-            header.draw(at: CGPoint(x: currentX + 5, y: tableStartY + 5), withAttributes: headerRowAttributes)
+            header.draw(at: CGPoint(x: currentX + 5, y: tableStartY - 12), withAttributes: headerRowAttributes)
             currentX += colWidths[index]
         }
         
-        // Draw horizontal line below header
-        let headerLineY = tableStartY + headerRowHeight
+        // Draw horizontal line below header - with padding for header row
+        let headerLineY = tableStartY - headerRowHeight - 12
         context.setStrokeColor(NSColor.black.cgColor)
         context.setLineWidth(1.0)
         context.move(to: CGPoint(x: tableX, y: headerLineY))
         context.addLine(to: CGPoint(x: tableX + totalTableWidth, y: headerLineY))
         context.strokePath()
         
-        // Table data rows
+        // Table data rows (each row below previous)
         let dataFont = NSFont.systemFont(ofSize: 11)
         let dataAttributes: [NSAttributedString.Key: Any] = [
             .font: dataFont,
@@ -1930,7 +1962,7 @@ struct FieldResultsPackage {
         timeFormatter.dateStyle = .none
         
         let sortedWindows = sortWindowsByTitleThenNumber(windows)
-        var currentRowY = headerLineY + 5
+        var currentRowY = headerLineY - 22  // Padding below separator so data rows sit properly in cells
         
         for window in sortedWindows {
             let result = getDisplayTestResult(for: window)
@@ -1957,19 +1989,19 @@ struct FieldResultsPackage {
                 currentX += colWidths[index]
             }
             
-            currentRowY += rowHeight
+            currentRowY -= rowHeight
         }
         
-        // Draw box border
-        let boxBottomY = currentRowY + 20
-        let boxHeight = boxBottomY - boxTopY
+        // Draw box border (box encloses bar down to below table)
+        let boxBottomY = currentRowY - 20
+        let boxHeight = boxTopY - boxBottomY
         context.setStrokeColor(NSColor.black.cgColor)
         context.setLineWidth(1.0)
-        context.stroke(CGRect(x: boxX, y: boxTopY, width: boxWidth, height: boxHeight))
+        context.stroke(CGRect(x: boxX, y: boxBottomY, width: boxWidth, height: boxHeight))
         
         // Summary text below table
-        let summaryY = boxBottomY + 15
         let summaryFont = NSFont.systemFont(ofSize: 11)
+        let summaryY = boxBottomY - 15 - summaryFont.lineHeight
         let summaryAttributes: [NSAttributedString.Key: Any] = [
             .font: summaryFont,
             .foregroundColor: NSColor.black
@@ -1979,10 +2011,10 @@ struct FieldResultsPackage {
         summaryText1.draw(at: CGPoint(x: boxX + 10, y: summaryY), withAttributes: summaryAttributes)
         
         let summaryText2 = "Detailed individual test reports available upon request."
-        let summaryText2Y = summaryY + summaryFont.lineHeight + 5
+        let summaryText2Y = summaryY - summaryFont.lineHeight - 5
         summaryText2.draw(at: CGPoint(x: boxX + 10, y: summaryText2Y), withAttributes: summaryAttributes)
         
-        // Footer at bottom
+        // Footer at bottom of page (fixed band at Y=50)
         let footerFont = NSFont.systemFont(ofSize: 10)
         let footerAttributes: [NSAttributedString.Key: Any] = [
             .font: footerFont,
@@ -1990,7 +2022,7 @@ struct FieldResultsPackage {
         ]
         
         let footerAddress = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
-        let footerY = pageRect.height - 50
+        let footerY: CGFloat = 50
         footerAddress.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         
         let pageText = "Page \(pageNumber) of \(totalPages)"
@@ -1999,104 +2031,91 @@ struct FieldResultsPackage {
     }
     
     private func drawPurposeObservationsWeatherPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
-        // No title - this is a continuation page
-        // Start content from top with margin - moved up from 80 to 50
-        let contentStartYFromTop: CGFloat = 50  // Start 50 points from top (moved up)
-        var currentY = pageRect.height - contentStartYFromTop  // Convert to backwards coordinates
+        // Match iOS: top-down layout, reserve footer band (60pt from bottom), fix page number format, use 86 mph (Tampa International)
+        let footerBandHeight: CGFloat = 60
+        let contentWidth = pageRect.width - 100
+        var currentYFromTop: CGFloat = 50 + Self.layoutShiftDown  // Top-down: distance from top of page
         
-        // Body font for regular text
         let bodyFont = NSFont.systemFont(ofSize: 11)
         let bodyAttributes: [NSAttributedString.Key: Any] = [
             .font: bodyFont,
             .foregroundColor: NSColor.black
         ]
-        
-        // Bold font for section headers - larger and bolder for prominence
-        let headerFont = NSFont.boldSystemFont(ofSize: 13)  // Increased from 11 to 13
+        let headerFont = NSFont.boldSystemFont(ofSize: 11)
         let headerAttributes: [NSAttributedString.Key: Any] = [
             .font: headerFont,
             .foregroundColor: NSColor.black
         ]
         
-        // Helper function to draw text with wrapping - accounts for backwards rendering
-        func drawWrappedText(_ text: String, attributes: [NSAttributedString.Key: Any], y: CGFloat, width: CGFloat) -> CGFloat {
+        func drawWrappedText(_ text: String, attributes: [NSAttributedString.Key: Any], yFromTop: CGFloat, width: CGFloat) -> CGFloat {
             let boundingRect = text.boundingRect(with: CGSize(width: width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attributes, context: nil)
-            // Convert backwards Y to top-down for drawing
-            let topDownY = pageRect.height - y - boundingRect.height
-            text.draw(in: CGRect(x: 50, y: topDownY, width: width, height: boundingRect.height), withAttributes: attributes)
-            // Return new backwards Y (move down = subtract in backwards coordinates)
-            return y - boundingRect.height
+            let pdfY = pageRect.height - yFromTop - boundingRect.height
+            text.draw(in: CGRect(x: 50, y: pdfY, width: width, height: boundingRect.height), withAttributes: attributes)
+            return yFromTop + boundingRect.height
         }
         
-        // REVERSED ORDER due to backwards PDF rendering - draw in reverse so they appear correctly
-        // WEATHER HISTORY first in code (should render last/bottom)
-        currentY = drawWrappedText("WEATHER HISTORY:", attributes: headerAttributes, y: currentY, width: pageRect.width - 100)
-        currentY -= 8  // Move down = subtract in backwards coordinates
-        // Create attributed string with superscript to handle wrapping properly (like WindowTest)
-        let weatherText = "The home is located in the path of Hurricane Milton. The wind gusts in the area were recorded at over 170 mph on October 9, 2024. NOAA reports sustained winds of between 61 and 91 mph"
-        let attributedWeatherText = NSMutableAttributedString(string: weatherText, attributes: bodyAttributes)
-        // Add superscript "2" at the end
-        let superscriptFont = NSFont.systemFont(ofSize: 8)
-        let superscriptAttributes: [NSAttributedString.Key: Any] = [
-            .font: superscriptFont,
-            .foregroundColor: NSColor.black,
-            .baselineOffset: 5
-        ]
-        let superscript2 = NSAttributedString(string: "2", attributes: superscriptAttributes)
-        attributedWeatherText.append(superscript2)
-        // Draw wrapped text with superscript - convert backwards Y to top-down for drawing
-        let textWidth = pageRect.width - 100
-        let boundingRect = attributedWeatherText.boundingRect(with: CGSize(width: textWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
-        let weatherTextTopDownY = pageRect.height - currentY - boundingRect.height
-        attributedWeatherText.draw(in: CGRect(x: 50, y: weatherTextTopDownY, width: textWidth, height: boundingRect.height))
-        currentY -= (boundingRect.height + 30)  // Increased spacing between sections (was 20)
+        // PURPOSE
+        currentYFromTop = drawWrappedText("PURPOSE:", attributes: headerAttributes, yFromTop: currentYFromTop, width: contentWidth)
+        currentYFromTop += 8
+        let purposeText = "True Reports was hired by the insured to inspect the property for a damage claim. The date of loss (DOL) is indicated as October 9, 2024. The goal of this inspection was to provide a professional opinion on the cause, origin, extent, and repairability of reported and observed damage."
+        currentYFromTop = drawWrappedText(purposeText, attributes: bodyAttributes, yFromTop: currentYFromTop, width: contentWidth)
+        currentYFromTop += 20
         
-        // OBSERVATIONS second in code (should render middle)
-        currentY = drawWrappedText("OBSERVATIONS:", attributes: headerAttributes, y: currentY, width: pageRect.width - 100)
-        currentY -= 8  // Move down = subtract in backwards coordinates
+        // OBSERVATIONS
+        currentYFromTop = drawWrappedText("OBSERVATIONS:", attributes: headerAttributes, yFromTop: currentYFromTop, width: contentWidth)
+        currentYFromTop += 8
         let observationsText = "Observations are presented within this report. Property condition is described in photograph captions and elsewhere. Full-resolution images are retained electronically and can be provided upon request."
-        currentY = drawWrappedText(observationsText, attributes: bodyAttributes, y: currentY, width: pageRect.width - 100)
-        currentY -= 30  // Increased spacing between sections (was 20)
+        currentYFromTop = drawWrappedText(observationsText, attributes: bodyAttributes, yFromTop: currentYFromTop, width: contentWidth)
+        currentYFromTop += 20
         
-        // PURPOSE last in code (should render first/top)
-        currentY = drawWrappedText("PURPOSE:", attributes: headerAttributes, y: currentY, width: pageRect.width - 100)
-        currentY -= 8  // Move down = subtract in backwards coordinates
-        let purposeText = "True Reports was hired by the insured to inspect the property for a damage claim. The date of loss (DOL) is indicated as October 9, 2024. The goal of this inspection was to provide a professional opinion on the cause, origin, extent, and repairability of reported and observed window damage."
-        currentY = drawWrappedText(purposeText, attributes: bodyAttributes, y: currentY, width: pageRect.width - 100)
-        currentY -= 20  // Final spacing
+        // WEATHER HISTORY - use custom text if set, otherwise default
+        currentYFromTop = drawWrappedText("WEATHER HISTORY:", attributes: headerAttributes, yFromTop: currentYFromTop, width: contentWidth)
+        currentYFromTop += 8
+        let weatherText: String
+        if let customWeatherText = job.customWeatherText,
+           !customWeatherText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            weatherText = customWeatherText
+        } else {
+            weatherText = "The home was impacted by Hurricane Milton. The wind gusts recorded by the weather station at the Tampa International Airport near the property were over 86 mph with sustained winds of 60 mph on October 9, 2024. NOAA reports sustained winds of between 61 and 91 mph."
+        }
+        currentYFromTop = drawWrappedText(weatherText, attributes: bodyAttributes, yFromTop: currentYFromTop, width: contentWidth)
+        currentYFromTop += 20
         
-        // Load and draw Hurricane Milton image
+        // Hurricane image - try custom first, then default
         var hurricaneImage: NSImage?
-        if let path = Bundle.main.path(forResource: "HurricaneMilton", ofType: "png", inDirectory: "images"),
-           let image = NSImage(contentsOfFile: path) {
-            hurricaneImage = image
-        } else if let path = Bundle.main.path(forResource: "HurricaneMilton", ofType: "png"),
-                  let image = NSImage(contentsOfFile: path) {
-            hurricaneImage = image
-        } else if let image = NSImage(named: "HurricaneMilton") ?? NSImage(named: "images/HurricaneMilton") {
-            hurricaneImage = image
+        if let customImagePath = job.customHurricaneImagePath {
+            let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let imageURL = documentsDirectory.appendingPathComponent("custom_hurricane_images").appendingPathComponent(customImagePath)
+            if FileManager.default.fileExists(atPath: imageURL.path),
+               let image = NSImage(contentsOfFile: imageURL.path) {
+                hurricaneImage = image
+            }
+        }
+        if hurricaneImage == nil {
+            if let path = Bundle.main.path(forResource: "HurricaneMilton", ofType: "png", inDirectory: "images"),
+               let image = NSImage(contentsOfFile: path) {
+                hurricaneImage = image
+            } else if let path = Bundle.main.path(forResource: "HurricaneMilton", ofType: "png"),
+                      let image = NSImage(contentsOfFile: path) {
+                hurricaneImage = image
+            } else if let image = NSImage(named: "HurricaneMilton") ?? NSImage(named: "images/HurricaneMilton") {
+                hurricaneImage = image
+            }
         }
         
         if let image = hurricaneImage {
-            currentY -= 10  // Move down = subtract in backwards coordinates
-            // 2 inches margin on each side = 144 points each = 288 points total
-            // Page width is 612 points (8.5 inches), so image width = 612 - 288 = 324 points (4.5 inches)
+            currentYFromTop += 10
             let maxWidth: CGFloat = 324
             let imageAspectRatio = image.size.width / image.size.height
             let imageWidth = min(maxWidth, image.size.width)
             let imageHeight = imageWidth / imageAspectRatio
-            
-            // Center the image
             let imageX = (pageRect.width - imageWidth) / 2
-            // Convert backwards Y to bottom-up Y for CGContext drawing
-            // currentY is backwards (large = top), convert to bottom-up
-            let imageTopYTopDown = pageRect.height - currentY
-            let imageRectBottomUp = CGRect(x: imageX, y: pageRect.height - imageTopYTopDown - imageHeight, width: imageWidth, height: imageHeight)
-            drawNSImage(image, in: imageRectBottomUp, context: context)
-            currentY -= (imageHeight + 15)  // Move down = subtract in backwards coordinates
+            let imagePdfY = pageRect.height - currentYFromTop - imageHeight
+            drawNSImage(image, in: CGRect(x: imageX, y: imagePdfY, width: imageWidth, height: imageHeight), context: context)
+            currentYFromTop += imageHeight + 15
         }
         
-        // Load and draw wide map image
+        // Wide map image
         var mapImage: NSImage?
         if let mapImagePath = job.wideMapImagePath {
             let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -2105,171 +2124,157 @@ struct FieldResultsPackage {
                 mapImage = NSImage(contentsOfFile: mapImageURL.path)
             }
         }
-        
         if let image = mapImage {
-            // 2 inches margin on each side = 144 points each = 288 points total
-            // Page width is 612 points (8.5 inches), so image width = 612 - 288 = 324 points (4.5 inches)
-            let maxWidth: CGFloat = 324
+            let maxWidth: CGFloat = 180
             let imageAspectRatio = image.size.width / image.size.height
             let imageWidth = min(maxWidth, image.size.width)
             let imageHeight = imageWidth / imageAspectRatio
-            
-            // Center the image
             let imageX = (pageRect.width - imageWidth) / 2
-            // Convert backwards Y to bottom-up Y for CGContext drawing
-            let imageTopYTopDown = pageRect.height - currentY
-            let imageRectBottomUp = CGRect(x: imageX, y: pageRect.height - imageTopYTopDown - imageHeight, width: imageWidth, height: imageHeight)
-            drawNSImage(image, in: imageRectBottomUp, context: context)
+            let imagePdfY = pageRect.height - currentYFromTop - imageHeight
+            drawNSImage(image, in: CGRect(x: imageX, y: imagePdfY, width: imageWidth, height: imageHeight), context: context)
         }
         
-        // Footer at bottom - use small Y value for backwards rendering (small Y = bottom of page)
+        // Footer in reserved band at bottom (never over content)
         let footerFont = NSFont.systemFont(ofSize: 10)
         let footerAttributes: [NSAttributedString.Key: Any] = [
             .font: footerFont,
             .foregroundColor: NSColor.gray
         ]
-        
-        // Use cleaned address if available, fallback to original
-        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
         let address = "\(addressToUse), \(job.city ?? ""), \(job.state ?? "") \(job.zip ?? "")".uppercased()
-        let footerY: CGFloat = 50  // Small Y value = bottom of page (due to backwards rendering)
+        let footerY: CGFloat = 50
         address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-        
         let pageText = "Page \(pageNumber) of \(totalPages)"
         let pageTextSize = pageText.size(withAttributes: footerAttributes)
         pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
     }
     
     private func drawSummaryPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job, windows: [Window]) {
+        // Match iOS: title at top (30pt from top), then legend, then aerial image; no address in header; footer at bottom only
+        let titleHeight: CGFloat = 30
+        let titleTopFromTop: CGFloat = 30 + Self.layoutShiftDown
+        let legendTopFromTop: CGFloat = titleTopFromTop + titleHeight + 20  // 80
+        let legendItemSpacing: CGFloat = 40
+        let circleSize: CGFloat = 20
+        let legendHeight: CGFloat = circleSize + 10
+        let imageTopFromTop: CGFloat = legendTopFromTop + legendHeight + 20
+        let footerSpace: CGFloat = 60
         
-        // Load overhead image
-        var overheadImage: NSImage?
-        if let imagePath = job.overheadImagePath {
-            let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            let imageURL = documentsDirectory.appendingPathComponent("overhead_images").appendingPathComponent(imagePath)
-            if FileManager.default.fileExists(atPath: imageURL.path) {
-                overheadImage = NSImage(contentsOfFile: imageURL.path)
-            }
-        }
+        let overheadImage = loadOverheadImageForExport(job: job)
         
-        // Title at top - "SPECIMEN LOCATIONS" - moved down ~50 points like overview
+        // Title at top - "SPECIMEN LOCATIONS"
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
-            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
+            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)
         ]
-        let titleHeight: CGFloat = 30
-        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
-        // Use backwards coordinate technique - bottom Y to render at top
-        let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
+        let titleRect = CGRect(x: 50, y: pageRect.height - titleTopFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "SPECIMEN LOCATIONS".draw(in: titleRect, withAttributes: titleAttributes)
         
-        // Draw legend above the image
-        let legendSpacing: CGFloat = 20
-        let legendY = titleRect.maxY + legendSpacing
-        let legendItemSpacing: CGFloat = 40
-        let circleSize: CGFloat = 20
+        // Legend below title (no address in header)
+        let legendY = pageRect.height - legendTopFromTop - circleSize  // PDF Y for bottom of circle row
         let legendFont = NSFont.systemFont(ofSize: 12)
         let legendTextAttributes: [NSAttributedString.Key: Any] = [
             .font: legendFont,
             .foregroundColor: NSColor.black
         ]
-        
-        // Legend items: (color, label)
-        let legendItems: [(NSColor, String)] = [
-            (.green, "Pass"),
-            (.red, "Fail"),
-            (.gray, "Not Tested")
-        ]
-        
-        // Calculate total width of legend items
+        // Build legend: include Pending only if any window has a blue (pending) dot
+        let hasPending = windows.contains { !$0.isInaccessible && $0.testResult != "Pass" && $0.testResult != "Fail" }
+        var legendItems: [(NSColor, String)] = [(.green, "Pass"), (.red, "Fail")]
+        if hasPending {
+            legendItems.append((.blue, "Pending"))
+        }
+        legendItems.append((.gray, "Not Tested"))
         var totalLegendWidth: CGFloat = 0
         for (_, label) in legendItems {
-            let textSize = label.size(withAttributes: legendTextAttributes)
-            totalLegendWidth += circleSize + 8 + textSize.width  // circle + spacing + text
+            totalLegendWidth += circleSize + 8 + label.size(withAttributes: legendTextAttributes).width
         }
-        totalLegendWidth += CGFloat(legendItems.count - 1) * legendItemSpacing  // spacing between items
-        
-        // Start X position to center the legend
+        totalLegendWidth += CGFloat(legendItems.count - 1) * legendItemSpacing
         var currentX = (pageRect.width - totalLegendWidth) / 2
-        
-        // Draw legend items
         for (color, label) in legendItems {
-            // Draw circle
             let circleRect = CGRect(x: currentX, y: legendY, width: circleSize, height: circleSize)
             context.setFillColor(color.cgColor)
             context.fillEllipse(in: circleRect)
-            
-            // Draw label
             let textSize = label.size(withAttributes: legendTextAttributes)
             let textY = legendY + (circleSize - textSize.height) / 2
             label.draw(at: CGPoint(x: currentX + circleSize + 8, y: textY), withAttributes: legendTextAttributes)
-            
-            // Move to next item
             currentX += circleSize + 8 + textSize.width + legendItemSpacing
         }
-        
-        let legendHeight: CGFloat = circleSize + 10  // Circle height + some padding
 
-        // Draw overhead image with dots - positioned below legend
+        // Draw overhead image with dots - drawTransformedImage (AspectFit + zoom + fit + pan, matches app)
         if let image = overheadImage {
-            // Calculate image size to fit on page (leaving space for title, legend, footer, and margins)
-            let footerSpace: CGFloat = 60  // Footer space + margin
-            let topMargin: CGFloat = legendY + legendHeight + 20  // Space below legend
+            let cgImage: CGImage? = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+                ?? image.tiffRepresentation.flatMap { NSBitmapImageRep(data: $0) }?.cgImage
+            if let cg = cgImage {
             let maxWidth: CGFloat = pageRect.width - 100
-            let maxHeight: CGFloat = pageRect.height - topMargin - footerSpace
-            let imageAspectRatio = image.size.width / image.size.height
-            let maxAspectRatio = maxWidth / maxHeight
+            let maxHeight: CGFloat = pageRect.height - imageTopFromTop - footerSpace
+            let maxSide = min(maxWidth, maxHeight)  // Square container
+            let originalImageSize = overheadImagePixelSizeForExport(image)
+            let pixelWidth = originalImageSize.width
+            let pixelHeight = originalImageSize.height
+            // Stored coords are in pixel space (LocationMarkerView uses overheadImagePixelSize)
+            let storedSize = CGSize(width: pixelWidth, height: pixelHeight)
             
-            var imageWidth = maxWidth
-            var imageHeight = maxHeight
-            if imageAspectRatio > maxAspectRatio {
-                imageHeight = maxWidth / imageAspectRatio
-            } else {
-                imageWidth = maxHeight * imageAspectRatio
-            }
+            // Zoom from job (match app's overheadZoomScale); current model has no overhead zoom/pan, use defaults
+            let zoomFactor = CGFloat(1.0)
+            let effectiveZoom = zoomFactor > 0 ? max(1.0, zoomFactor) : 1.0
             
-            // Calculate image position - Core Graphics uses bottom-up coordinates
-            let imageX = (pageRect.width - imageWidth) / 2
-            // Position image from top - convert from top-down to bottom-up
-            let imageTopYTopDown = topMargin  // Start from top with small margin
-            let imageBottomY = pageRect.height - imageTopYTopDown - imageHeight  // Convert to bottom-up
+            // Apply fit scale (app scales down when zoomed content exceeds container)
+            let imageFitWidth = pixelWidth >= pixelHeight ? maxSide : maxSide * pixelWidth / pixelHeight
+            let imageFitHeight = pixelHeight >= pixelWidth ? maxSide : maxSide * pixelHeight / pixelWidth
+            let imageFitSize = CGSize(width: imageFitWidth, height: imageFitHeight)
+            let fitScale = overheadFitScaleForExport(
+                imageSize: imageFitSize,
+                scale: effectiveZoom,
+                rotation: 0,
+                containerSize: CGSize(width: maxSide, height: maxSide)
+            )
             
-            // Draw image using Core Graphics directly
-            let imageRect = CGRect(x: imageX, y: imageBottomY, width: imageWidth, height: imageHeight)
-            drawNSImage(image, in: imageRect, context: context)
+            // Scale for drawTransformedImage: output units per image pixel (matches app pipeline)
+            let scale = (imageFitSize.width / pixelWidth) * effectiveZoom * fitScale
             
-            // Draw dots for each window - use same coordinate conversion logic as app
-            // The app uses convertImageToViewY which returns position from top of frame
-            // We convert that to PDF coordinates (bottom-up) by subtracting from frame top
-            let originalImageSize = image.size
+            // Pan in image pixel space, clamped so image stays overlapping visible rect
+            let rawPanX = CGFloat(0)
+            let rawPanY = CGFloat(0)
+            let maxPanX = max(0, (pixelWidth * scale - maxSide) / 2 / scale)
+            let maxPanY = max(0, (pixelHeight * scale - maxSide) / 2 / scale)
+            let panX = min(maxPanX, max(-maxPanX, rawPanX))
+            let panY = min(maxPanY, max(-maxPanY, rawPanY))
             
-            // Use the actual drawn image dimensions (imageWidth x imageHeight) for coordinate conversion
-            // These are the actual dimensions of the image that was drawn on the page
-            // The helper functions will calculate positions relative to this actual image size
-            let displayedImageSize = CGSize(width: imageWidth, height: imageHeight)
-            
-            // Calculate the top of the actually drawn image in PDF coordinates
-            // The image is drawn at imageBottomY, so the top is:
-            let displayedImageTopYBottomUp = imageBottomY + imageHeight
+            // Square container, draw with same transform as app (AspectFit + zoom + fit + pan)
+            let containerX = (pageRect.width - maxSide) / 2
+            let containerBottomY = pageRect.height - imageTopFromTop - maxSide
+            let imageRect = CGRect(x: containerX, y: containerBottomY, width: maxSide, height: maxSide)
+            drawTransformedImage(cgImage: cg, in: imageRect, context: context, scale: scale, panX: panX, panY: panY, rotation: 0)
             
             for window in sortWindowsByTitleThenNumber(windows) {
+                guard window.xPosition > 0 && window.yPosition > 0 else { continue }
                 let windowDotColor = dotColor(for: window)
+                // Convert from stored (image.size) space to pixel space when they differ
+                let wx: CGFloat
+                let wy: CGFloat
+                if abs(pixelWidth - storedSize.width) > 0.5 || abs(pixelHeight - storedSize.height) > 0.5 {
+                    wx = CGFloat(window.xPosition) * pixelWidth / max(1, storedSize.width)
+                    wy = CGFloat(window.yPosition) * pixelHeight / max(1, storedSize.height)
+                } else {
+                    wx = CGFloat(window.xPosition)
+                    wy = CGFloat(window.yPosition)
+                }
+                // Map image pixel (wx, wy) to PDF using same transform as drawTransformedImage
+                // wy is from top of image; transformImagePointToRect expects image coords (CGImage: y=0 at bottom)
+                let imageY = pixelHeight - wy
+                let pt = transformImagePointToRect(dx: wx, dy: imageY, imageWidth: pixelWidth, imageHeight: pixelHeight, rect: imageRect, scale: scale, panX: panX, panY: panY, rotation: 0)
+                let pdfDotX = pt.x
+                let pdfDotY = pt.y
                 
-                // Use helper functions with displayed image size - this matches where the image actually is
-                // The helper functions will calculate positions relative to the displayed image area
-                let dotXFromLeft = convertImageXToFrameX(CGFloat(window.xPosition), frameSize: displayedImageSize, originalImageSize: originalImageSize)
-                let dotYFromTop = convertImageYToFrameY(CGFloat(window.yPosition), frameSize: displayedImageSize, originalImageSize: originalImageSize)
-                
-                // Convert to PDF coordinates (bottom-left origin)
-                // imageX already centers the image horizontally, so just add dotXFromLeft
-                // For Y: flip the coordinate (mirror across X-axis) by measuring from bottom instead of top
-                let pdfDotX = imageX + dotXFromLeft
-                let pdfDotY = imageBottomY + dotYFromTop  // Add instead of subtract to flip
-                
-                // Draw the dot
+                let dotRect = CGRect(x: pdfDotX - 10, y: pdfDotY - 10, width: 20, height: 20)
+                // Draw white stroke first (matches app)
+                context.setStrokeColor(NSColor.white.cgColor)
+                context.setLineWidth(2)
+                context.strokeEllipse(in: dotRect)
+                // Then fill
                 context.setFillColor(windowDotColor.cgColor)
-                context.fillEllipse(in: CGRect(x: pdfDotX - 10, y: pdfDotY - 10, width: 20, height: 20))
+                context.fillEllipse(in: dotRect)
                 
                 // Draw window number (just the number at the end of the specimen name)
                 if let windowNumber = window.windowNumber {
@@ -2282,240 +2287,185 @@ struct FieldResultsPackage {
                     displayNumber.draw(at: CGPoint(x: pdfDotX - numberSize.width / 2, y: pdfDotY - numberSize.height / 2), withAttributes: numberAttributes)
                 }
             }
+            }
+        } else {
+            // Fallback when image fails to load - draw placeholder
+            let maxWidth: CGFloat = pageRect.width - 100
+            let maxHeight: CGFloat = pageRect.height - imageTopFromTop - footerSpace
+            let placeholderWidth = min(400, maxWidth)
+            let placeholderHeight = min(300, maxHeight)
+            let placeholderX = (pageRect.width - placeholderWidth) / 2
+            let placeholderBottomY = pageRect.height - imageTopFromTop - placeholderHeight
+            let placeholderRect = CGRect(x: placeholderX, y: placeholderBottomY, width: placeholderWidth, height: placeholderHeight)
+            context.setFillColor(NSColor.lightGray.cgColor)
+            context.fill(placeholderRect)
+            let placeholderAttributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 14),
+                .foregroundColor: NSColor.gray
+            ]
+            let placeholderText = "Image not found"
+            let textSize = placeholderText.size(withAttributes: placeholderAttributes)
+            let textX = placeholderX + (placeholderWidth - textSize.width) / 2
+            let textY = placeholderBottomY + (placeholderHeight - textSize.height) / 2
+            placeholderText.draw(at: CGPoint(x: textX, y: textY), withAttributes: placeholderAttributes)
         }
         
-        // Footer at bottom
+        // Footer at bottom (reserved band, no overlap with content)
         let footerFont = NSFont.systemFont(ofSize: 10)
         let footerAttributes: [NSAttributedString.Key: Any] = [
             .font: footerFont,
             .foregroundColor: NSColor.gray
         ]
-        
-        // Use cleaned address if available, fallback to original
-        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
         let address = "\(addressToUse), \(job.city ?? ""), \(job.state ?? "") \(job.zip ?? "")".uppercased()
-        let footerY = pageRect.height - 50  // 50 points from bottom (top-down coordinates)
+        let footerY: CGFloat = 50
         address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-        
         let pageText = "Page \(pageNumber) of \(totalPages)"
         let pageTextSize = pageText.size(withAttributes: footerAttributes)
         pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
     }
     
     private func drawSummaryOfFindingsPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job, windows: [Window]) {
-        // Title at top - "SUMMARY OF FINDINGS" - moved down ~50 points
+        // Match iOS: compact layout so all content fits above footer (Y=50)
+        let contentWidth = pageRect.width - 100
+        var currentYFromTop: CGFloat = 20
+
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
-            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
+            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)
         ]
         let titleHeight: CGFloat = 30
-        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
-        // Use backwards coordinate technique - bottom Y to render at top
-        let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
+        let titleRect = CGRect(x: 50, y: pageRect.height - currentYFromTop - titleHeight, width: contentWidth, height: titleHeight)
         "SUMMARY OF FINDINGS".draw(in: titleRect, withAttributes: titleAttributes)
+        currentYFromTop += titleHeight + 6
         
-        // Address below heading
-        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
-        var addressComponents: [String] = []
-        if !addressToUse.isEmpty {
-            addressComponents.append(addressToUse)
-        }
-        if let city = job.city, !city.isEmpty {
-            addressComponents.append(city)
-        }
-        if let state = job.state, !state.isEmpty {
-            addressComponents.append(state)
-        }
-        if let zip = job.zip, !zip.isEmpty {
-            addressComponents.append(zip)
-        }
-        let addressString = addressComponents.joined(separator: ", ")
+        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+        let addressString = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip)
         let addressFont = NSFont.systemFont(ofSize: 12)
-        let addressAttributes: [NSAttributedString.Key: Any] = [
-            .font: addressFont,
-            .foregroundColor: NSColor.black
-        ]
-        let addressY = titleRect.maxY + 10
-        addressString.draw(at: CGPoint(x: 50, y: addressY), withAttributes: addressAttributes)
-        
-        var currentY = addressY + 30
-        
-        // TEST PERFORMED Section
+        let addressAttributes: [NSAttributedString.Key: Any] = [.font: addressFont, .foregroundColor: NSColor.black]
+        let addressLineHeight = addressString.size(withAttributes: addressAttributes).height
+        let addressPdfY = pageRect.height - currentYFromTop - addressLineHeight
+        addressString.draw(at: CGPoint(x: 50, y: addressPdfY), withAttributes: addressAttributes)
+        currentYFromTop += addressLineHeight + 12
+
         let sectionHeadingFont = NSFont.boldSystemFont(ofSize: 12)
         let sectionHeadingAttributes: [NSAttributedString.Key: Any] = [
             .font: sectionHeadingFont,
-            .foregroundColor: NSColor(red: 16/255.0, green: 50/255.0, blue: 93/255.0, alpha: 1.0)  // Light blue #10325d
+            .foregroundColor: NSColor(red: 16/255.0, green: 50/255.0, blue: 93/255.0, alpha: 1.0)
         ]
-        "TEST PERFORMED".draw(at: CGPoint(x: 50, y: currentY), withAttributes: sectionHeadingAttributes)
-        currentY += 20
-        
         let bodyFont = NSFont.systemFont(ofSize: 11)
-        let bodyAttributes: [NSAttributedString.Key: Any] = [
-            .font: bodyFont,
-            .foregroundColor: NSColor.black
-        ]
-        let testPerformedText = "The ASTM E1105 water test simulates rain conditions and was used to test if the windows are leaking."
-        let textRect = CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: 0)
-        let boundingRect = testPerformedText.boundingRect(with: CGSize(width: textRect.width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: bodyAttributes, context: nil)
-        testPerformedText.draw(in: CGRect(x: 50, y: currentY, width: textRect.width, height: boundingRect.height), withAttributes: bodyAttributes)
-        currentY += boundingRect.height + 25
+        let bodyAttributes: [NSAttributedString.Key: Any] = [.font: bodyFont, .foregroundColor: NSColor.black]
         
-        // BACKGROUND INFORMATION Section
-        let majorSectionFont = NSFont.boldSystemFont(ofSize: 16)
-        let majorSectionAttributes: [NSAttributedString.Key: Any] = [
-            .font: majorSectionFont,
-            .foregroundColor: NSColor(red: 16/255.0, green: 50/255.0, blue: 93/255.0, alpha: 1.0)  // Light blue #10325d
-        ]
-        "BACKGROUND INFORMATION".draw(at: CGPoint(x: 50, y: currentY), withAttributes: majorSectionAttributes)
-        currentY += 25
+        func drawBlock(_ text: String, attrs: [NSAttributedString.Key: Any], spacingAfter: CGFloat) {
+            let rect = text.boundingRect(with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attrs, context: nil)
+            let drawHeight = rect.height + 2  // Small buffer to avoid clipping from rounding
+            let pdfY = pageRect.height - currentYFromTop - drawHeight
+            text.draw(in: CGRect(x: 50, y: pdfY, width: contentWidth, height: drawHeight), withAttributes: attrs)
+            currentYFromTop += drawHeight + spacingAfter
+        }
+        func drawLine(_ text: String, attrs: [NSAttributedString.Key: Any], spacingAfter: CGFloat) {
+            let lineHeight = text.size(withAttributes: attrs).height
+            let drawHeight = lineHeight + 2  // Small buffer to avoid clipping
+            let pdfY = pageRect.height - currentYFromTop - drawHeight
+            text.draw(in: CGRect(x: 50, y: pdfY, width: contentWidth, height: drawHeight), withAttributes: attrs)
+            currentYFromTop += drawHeight + spacingAfter
+        }
         
-        // Sub-heading
-        let subHeadingText = "Cyclical Wind Pressures - Why Hurricanes can Cause Windows to Fail."
-        let subHeadingRect = subHeadingText.boundingRect(with: CGSize(width: pageRect.width - 100, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: sectionHeadingAttributes, context: nil)
-        subHeadingText.draw(in: CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: subHeadingRect.height), withAttributes: sectionHeadingAttributes)
-        currentY += subHeadingRect.height + 15
+        drawLine("TEST PERFORMED", attrs: sectionHeadingAttributes, spacingAfter: 10)
+        drawBlock("The ASTM E1105 water test simulates rain conditions and was used to test if the windows are leaking.", attrs: bodyAttributes, spacingAfter: 12)
         
-        // Background information paragraphs
-        let backgroundPara1 = "Cyclical wind pressures in hurricanes can cause windows to fail even if they are structurally sound. Cyclical wind pressures in hurricanes can create significant stress on building components, leading to structural integrity issues over time."
-        let para1Rect = backgroundPara1.boundingRect(with: CGSize(width: pageRect.width - 100, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: bodyAttributes, context: nil)
-        backgroundPara1.draw(in: CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: para1Rect.height), withAttributes: bodyAttributes)
-        currentY += para1Rect.height + 12
+        drawLine("BACKGROUND INFORMATION", attrs: [.font: NSFont.boldSystemFont(ofSize: 16), .foregroundColor: NSColor(red: 16/255.0, green: 50/255.0, blue: 93/255.0, alpha: 1.0)], spacingAfter: 12)
+        drawBlock("Cyclical Wind Pressures - Why Hurricanes can Cause Windows to Fail.", attrs: sectionHeadingAttributes, spacingAfter: 8)
+        drawBlock("Cyclical wind pressures in hurricanes can cause windows to fail even if they are structurally sound. Cyclical wind pressures in hurricanes can create significant stress on building components, leading to structural integrity issues over time.", attrs: bodyAttributes, spacingAfter: 8)
+        drawBlock("During a hurricane, wind changes speed and direction rapidly, creating cyclical pressures that alternate between positive and negative forces. This constant variation can weaken window components, damage seals, and create openings that allow water infiltration.", attrs: bodyAttributes, spacingAfter: 8)
+        let listItemAttributes: [NSAttributedString.Key: Any] = [.font: bodyFont, .foregroundColor: NSColor.black]
+        drawBlock("1. Positive Pressure: When wind strikes a building, it creates a positive pressure on the side facing the wind. This pressure attempts to push the building away from the wind.", attrs: listItemAttributes, spacingAfter: 6)
+        drawBlock("2. Negative Pressure (Suction): On the leeward side (the side away from the wind) and over the roof, negative pressures are created. These suction forces attempt to pull parts of the building away from the main structure.¹", attrs: listItemAttributes, spacingAfter: 4)
+
+        drawLine("RECOMMENDATIONS & CONCLUSION", attrs: [.font: NSFont.boldSystemFont(ofSize: 24), .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)], spacingAfter: 8)
         
-        // First paragraph as quote
-        let firstQuote = "\"During a hurricane, wind changes speed and direction rapidly, creating cyclical pressures that alternate between positive and negative forces. This constant variation can weaken window components, damage seals, and create openings that allow water infiltration."
-        let firstQuoteRect = firstQuote.boundingRect(with: CGSize(width: pageRect.width - 100, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: bodyAttributes, context: nil)
-        firstQuote.draw(in: CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: firstQuoteRect.height), withAttributes: bodyAttributes)
-        currentY += firstQuoteRect.height + 15
-        
-        // Numbered list without quotes
-        let listItemFont = NSFont.systemFont(ofSize: 11)
-        let listItemAttributes: [NSAttributedString.Key: Any] = [
-            .font: listItemFont,
-            .foregroundColor: NSColor.black
-        ]
-        
-        let listItem1 = "1. Positive Pressure: When wind strikes a building, it creates a positive pressure on the side facing the wind. This pressure attempts to push the building away from the wind."
-        let item1Rect = listItem1.boundingRect(with: CGSize(width: pageRect.width - 100, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: listItemAttributes, context: nil)
-        listItem1.draw(in: CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: item1Rect.height), withAttributes: listItemAttributes)
-        currentY += item1Rect.height + 10
-        
-        let listItem2 = "2. Negative Pressure (Suction): On the leeward side (the side away from the wind) and over the roof, negative pressures are created. These suction forces attempt to pull parts of the building away from the main structure.\"¹"
-        let item2Rect = listItem2.boundingRect(with: CGSize(width: pageRect.width - 100, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: listItemAttributes, context: nil)
-        listItem2.draw(in: CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: item2Rect.height), withAttributes: listItemAttributes)
-        currentY += item2Rect.height + 25  // Add blank line (25 points) after
-        
-        // RECOMMENDATIONS & CONCLUSION Section - Bold, size 24, blue
-        let recSectionFont = NSFont.boldSystemFont(ofSize: 24)
-        let recSectionAttributes: [NSAttributedString.Key: Any] = [
-            .font: recSectionFont,
-            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
-        ]
-        "RECOMMENDATIONS & CONCLUSION".draw(at: CGPoint(x: 50, y: currentY), withAttributes: recSectionAttributes)
-        currentY += 25
-        
-        // Calculate statistics
         let sortedWindows = sortWindowsByTitleThenNumber(windows)
         let failedWindows = sortedWindows.filter { $0.testResult == "Fail" }
         let inaccessibleWindows = sortedWindows.filter { $0.isInaccessible }
-        let totalTestedWindows = sortedWindows.count
+        let windowsTested = sortedWindows.count - inaccessibleWindows.count
         let failedCount = failedWindows.count
         
-        // Recommendations paragraph 1
         let recommendationsPara1: String
         if failedCount > 0 {
-            recommendationsPara1 = "\(failedCount) of \(totalTestedWindows) window\(totalTestedWindows == 1 ? "" : "s") failed the ASTM E1105 water test and require repair or replacement. Cyclical pressures from hurricanes can cause windows to fail by weakening glazing, damaging seals, and creating openings that lead to interior damage. For more details on hurricane damage to windows, see the section below called Common Terms."
+            recommendationsPara1 = "\(failedCount) of \(windowsTested) window specimen\(windowsTested == 1 ? "" : "s") tested failed the ASTM E1105 water test and require repair or replacement. Cyclical pressures from hurricanes can cause windows to fail by weakening glazing, damaging seals, and creating openings that lead to interior damage. For more details on hurricane damage to windows, see the section below called Common Terms."
         } else {
             recommendationsPara1 = "All tested windows passed the ASTM E1105 water test. However, cyclical pressures from hurricanes can still cause windows to fail by weakening glazing, damaging seals, and creating openings that lead to interior damage. For more details on hurricane damage to windows, see the section below called Common Terms."
+}
+        drawBlock(recommendationsPara1, attrs: bodyAttributes, spacingAfter: 8)
+
+        if job.entity.attributesByName["conclusionComment"] != nil,
+           let conclusionComment = job.value(forKey: "conclusionComment") as? String, !conclusionComment.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
+            drawBlock(conclusionComment, attrs: bodyAttributes, spacingAfter: 8)
         }
-        let recPara1Rect = recommendationsPara1.boundingRect(with: CGSize(width: pageRect.width - 100, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: bodyAttributes, context: nil)
-        recommendationsPara1.draw(in: CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: recPara1Rect.height), withAttributes: bodyAttributes)
-        currentY += recPara1Rect.height + 12
-        
-        // Recommendations paragraph 2 (about untested windows)
         if inaccessibleWindows.count > 0 {
             let windowCount = inaccessibleWindows.count
-            let recommendationsPara2 = "We were unable to test \(windowCount) window\(windowCount == 1 ? "" : "s"). Please see details below."
-            let recPara2Rect = recommendationsPara2.boundingRect(with: CGSize(width: pageRect.width - 100, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: bodyAttributes, context: nil)
-            recommendationsPara2.draw(in: CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: recPara2Rect.height), withAttributes: bodyAttributes)
-            currentY += recPara2Rect.height + 12
+            drawBlock("We were unable to test \(windowCount) window\(windowCount == 1 ? "" : "s"). Please see details below.", attrs: bodyAttributes, spacingAfter: 8)
+        }
+        if job.entity.attributesByName["internalNotes"] != nil,
+           let internalNotes = job.value(forKey: "internalNotes") as? String, !internalNotes.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
+            drawBlock("Note: \(internalNotes)", attrs: bodyAttributes, spacingAfter: 8)
         }
         
-        // Footer at bottom
         let footerFont = NSFont.systemFont(ofSize: 10)
-        let footerAttributes: [NSAttributedString.Key: Any] = [
-            .font: footerFont,
-            .foregroundColor: NSColor.gray
-        ]
-        
+        let footerAttributes: [NSAttributedString.Key: Any] = [.font: footerFont, .foregroundColor: NSColor.gray]
+        let footerY: CGFloat = 50
         let footerAddress = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
-        let footerY = pageRect.height - 50
         footerAddress.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-        
         let pageText = "Page \(pageNumber) of \(totalPages)"
         let pageTextSize = pageText.size(withAttributes: footerAttributes)
         pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
     }
     
     private func drawPhotoPage(context: CGContext, pageRect: CGRect, window: Window, photos: [FieldResultsPackage.PhotoData], pageNumber: Int, totalPages: Int, job: Job) {
-        // Footer at bottom - top-down coordinates: large Y value for bottom
-        let footerFont = NSFont.systemFont(ofSize: 10)
-        let footerAttributes: [NSAttributedString.Key: Any] = [
-            .font: footerFont,
-            .foregroundColor: NSColor.gray
-        ]
-        
-        // Use cleaned address if available, fallback to original
-        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
-        let address = "\(addressToUse), \(job.city ?? ""), \(job.state ?? "") \(job.zip ?? "")".uppercased()
-        let footerY = pageRect.height - 50  // 50 points from bottom (top-down coordinates)
-        address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-        
-        let pageText = "Page \(pageNumber) of \(totalPages)"
-        let pageTextSize = pageText.size(withAttributes: footerAttributes)
-        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
-        
-        // Title at top - NSString.draw uses top-down coordinates (Y=0 at top)
-        let titleFont = NSFont.boldSystemFont(ofSize: 20)
+        let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
-            .foregroundColor: NSColor.black
+            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Blue #276091 to match other report titles
         ]
         let windowTitle = window.windowNumber ?? "Unknown"
-        // Use backwards coordinate technique - bottom Y to render at top
-        let titleHeight: CGFloat = 25
-        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
+        let titleHeight: CGFloat = 30
+        let titleYFromTop: CGFloat = 30  // Match iOS - title higher on page for more content room
         let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         windowTitle.draw(in: titleRect, withAttributes: titleAttributes)
         
-        // Layout 4 photos in a 2x2 grid - position below title using top-down coordinates
         let photoSize: CGFloat = 250
         let spacing: CGFloat = 20
         let startX: CGFloat = 50
-        
-        // If there are only 2 photos, center them vertically on the page
         let spacingFromTitle: CGFloat = photos.count == 2 ? 20 : 50
-        let startYTopDown: CGFloat
+        let totalPhotoHeight = photoSize + 60
+        let shiftUp: CGFloat = 25  // Top row: move down slightly from title
+        let rowSpacing: CGFloat = 50  // Gap between rows - balanced to avoid overlap while keeping second row compact
+        let startYFromTop: CGFloat = (photos.count == 2
+            ? max(titleYFromTop + titleHeight + 20, (pageRect.height - 50 - totalPhotoHeight) / 2)
+            : titleYFromTop + titleHeight + spacingFromTitle) - shiftUp
         
-        if photos.count == 2 {
-            // Calculate the total height needed for 2 photos (including caption space)
-            let totalPhotoHeight = photoSize + 60 // photo + caption space
-            // Center vertically: start from middle of page, subtract half the photo height
-            let pageCenterY = pageRect.height / 2
-            startYTopDown = pageCenterY - (totalPhotoHeight / 2)
-        } else {
-            startYTopDown = titleRect.maxY + spacingFromTitle  // Points below title (top-down)
-        }
-        
+        // First pass: draw all images and arrows so captions can be drawn on top
+        // (avoids transparent/clear border areas of images covering caption text)
+        let captionFont = NSFont.systemFont(ofSize: 10)
+        let captionParagraphStyle = NSMutableParagraphStyle()
+        captionParagraphStyle.lineBreakMode = .byWordWrapping
+        captionParagraphStyle.alignment = .left
+        let captionAttributes: [NSAttributedString.Key: Any] = [
+            .font: captionFont,
+            .foregroundColor: NSColor.black,
+            .paragraphStyle: captionParagraphStyle
+        ]
+        let captionLineHeight = captionFont.lineHeight
+        let minimumHeightForTwoLines = captionLineHeight * 2 + 4
+        var captionRects: [(attributedCaption: NSAttributedString, rect: CGRect)] = []
+
         for (index, photoData) in photos.enumerated() {
             let row = index / 2
             let col = index % 2
             let x = startX + CGFloat(col) * (photoSize + spacing)
-            // Calculate Y position for each photo - convert from top-down to bottom-up for Core Graphics
-            let photoYTopDown = startYTopDown + CGFloat(row) * (photoSize + spacing + 60) // Extra space for caption
+            let photoYFromTop = startYFromTop + CGFloat(row) * (photoSize + spacing + rowSpacing)
             
-            // Draw photo without coordinate flip - NSImage.draw(in:) handles PDF coordinates correctly
-            // using UIKit's top-down coordinate system provided by UIGraphicsPDFRenderer
             let originalImage = photoData.image
             let originalImageSize = originalImage.size
             
@@ -2529,41 +2479,88 @@ struct FieldResultsPackage {
                 processedImage = originalImage
             }
             
-            // Convert top-down Y to bottom-up Y for CGContext drawing
-            let imageRectBottomUp = CGRect(x: x, y: pageRect.height - photoYTopDown - photoSize, width: photoSize, height: photoSize)
-            drawNSImage(processedImage, in: imageRectBottomUp, context: context)
+            let imageRectBottomUp = CGRect(x: x, y: pageRect.height - photoYFromTop - photoSize, width: photoSize, height: photoSize)
+            let zoomScale = CGFloat(1.0)
+            let panX = CGFloat(0)
+            let panY = CGFloat(0)
+            let hasZoomPan = abs(zoomScale - 1.0) > 0.001 || abs(panX) > 0.5 || abs(panY) > 0.5
             
-            // Draw arrow if present (use original image size for coordinate conversion)
+            var photoTransform: (pixelWidth: CGFloat, pixelHeight: CGFloat, scale: CGFloat, clampedPanX: CGFloat, clampedPanY: CGFloat)?
+            if hasZoomPan, let cgImage = processedImage.cgImage(forProposedRect: nil, context: nil, hints: nil) ?? processedImage.tiffRepresentation.flatMap({ NSBitmapImageRep(data: $0) })?.cgImage {
+                let pixelWidth = CGFloat(cgImage.width)
+                let pixelHeight = CGFloat(cgImage.height)
+                let maxSide = photoSize
+                let imageFitWidth = pixelWidth >= pixelHeight ? maxSide : maxSide * pixelWidth / pixelHeight
+                let imageFitHeight = pixelHeight >= pixelWidth ? maxSide : maxSide * pixelHeight / pixelWidth
+                let imageFitSize = CGSize(width: imageFitWidth, height: imageFitHeight)
+                let fitScale = overheadFitScaleForExport(
+                    imageSize: imageFitSize,
+                    scale: zoomScale,
+                    rotation: 0,
+                    containerSize: CGSize(width: maxSide, height: maxSide)
+                )
+                let scale = (imageFitSize.width / pixelWidth) * zoomScale * fitScale
+                let maxPanX = max(0, (pixelWidth * scale - maxSide) / 2 / scale)
+                let maxPanY = max(0, (pixelHeight * scale - maxSide) / 2 / scale)
+                let clampedPanX = min(maxPanX, max(-maxPanX, panX))
+                let clampedPanY = min(maxPanY, max(-maxPanY, panY))
+                photoTransform = (pixelWidth, pixelHeight, scale, clampedPanX, clampedPanY)
+                drawTransformedImage(cgImage: cgImage, in: imageRectBottomUp, context: context, scale: scale, panX: clampedPanX, panY: clampedPanY, rotation: 0)
+            } else {
+                drawNSImageAspectFit(processedImage, in: imageRectBottomUp, context: context)
+            }
+            
             let arrowX = photoData.photo.arrowXPosition
             let arrowY = photoData.photo.arrowYPosition
             if arrowX > 0, arrowY > 0, let direction = photoData.photo.arrowDirection {
                 let displayedImageSize = CGSize(width: photoSize, height: photoSize)
-                
-                // Convert arrow coordinates from original image space to PDF photo space
-                let arrowXFromLeft = convertImageXToFrameX(CGFloat(arrowX), frameSize: displayedImageSize, originalImageSize: originalImageSize)
-                let arrowYFromTop = convertImageYToFrameY(CGFloat(arrowY), frameSize: displayedImageSize, originalImageSize: originalImageSize)
-                
-                // Convert to PDF coordinates (top-down origin matches UIKit drawing context)
-                let pdfArrowX = x + arrowXFromLeft
-                let pdfArrowY = photoYTopDown + arrowYFromTop
-                
-                // Draw arrow
+                let pdfArrowX: CGFloat
+                let pdfArrowY: CGFloat
+                if let t = photoTransform {
+                    let pt = transformImagePointToRect(dx: CGFloat(arrowX), dy: t.pixelHeight - CGFloat(arrowY), imageWidth: t.pixelWidth, imageHeight: t.pixelHeight, rect: imageRectBottomUp, scale: t.scale, panX: t.clampedPanX, panY: t.clampedPanY, rotation: 0)
+                    pdfArrowX = pt.x
+                    pdfArrowY = pt.y
+                } else {
+                    let arrowXFromLeft = convertImageXToFrameX(CGFloat(arrowX), frameSize: displayedImageSize, originalImageSize: originalImageSize)
+                    let arrowYFromTop = convertImageYToFrameY(CGFloat(arrowY), frameSize: displayedImageSize, originalImageSize: originalImageSize)
+                    pdfArrowX = x + arrowXFromLeft
+                    pdfArrowY = pageRect.height - (photoYFromTop + arrowYFromTop)
+                }
                 drawArrow(context: context, at: CGPoint(x: pdfArrowX, y: pdfArrowY), direction: direction)
             }
             
-            // Draw caption
-            let captionFont = NSFont.systemFont(ofSize: 10)
-            let captionAttributes: [NSAttributedString.Key: Any] = [
-                .font: captionFont,
-                .foregroundColor: NSColor.black
-            ]
             let caption = photoData.caption
-            // Consistent caption positioning for all photo counts
+            let attributedCaption = NSAttributedString(string: caption, attributes: captionAttributes)
+            let captionBoundingRect = attributedCaption.boundingRect(
+                with: CGSize(width: photoSize, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                context: nil
+            )
+            let captionHeight = max(ceil(captionBoundingRect.height) + 2, minimumHeightForTwoLines)
             let captionOffset: CGFloat = 5
-            let captionY = photoYTopDown + photoSize + captionOffset
-            let captionRect = CGRect(x: x, y: captionY, width: photoSize, height: 20)
-            caption.draw(in: captionRect, withAttributes: captionAttributes)
+            let captionYFromTop = photoYFromTop + photoSize + captionOffset
+            let captionPdfY = pageRect.height - captionYFromTop - captionHeight
+            let captionRect = CGRect(x: x, y: captionPdfY, width: photoSize, height: captionHeight)
+            captionRects.append((attributedCaption, captionRect))
         }
+        
+        // Second pass: draw all captions on top so they are never covered by image transparency
+        for (attributedCaption, captionRect) in captionRects {
+            attributedCaption.draw(in: captionRect)
+        }
+        
+        let footerFont = NSFont.systemFont(ofSize: 10)
+        let footerAttributes: [NSAttributedString.Key: Any] = [
+            .font: footerFont,
+            .foregroundColor: NSColor.gray
+        ]
+        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+        let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+        let footerY: CGFloat = 50
+        address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        let pageText = "Page \(pageNumber) of \(totalPages)"
+        let pageTextSize = pageText.size(withAttributes: footerAttributes)
+        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
     }
     
     private func loadGaugeImage(from imagePath: String) -> NSImage? {
@@ -2591,130 +2588,216 @@ struct FieldResultsPackage {
     }
     
     private func drawCalibrationPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
-        // Title at top - "CALIBRATED EQUIPMENT" - moved down ~50 points
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
-            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
+            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)
         ]
         let titleHeight: CGFloat = 30
-        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
-        // Use backwards coordinate technique - bottom Y to render at top
+        let titleYFromTop: CGFloat = 80 + Self.layoutShiftDown
         let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "CALIBRATED EQUIPMENT".draw(in: titleRect, withAttributes: titleAttributes)
         
-        var currentY = titleRect.maxY + 40
+        // Content below title: use distance-from-top and convert to PDF Y when drawing
+        var contentFromTop: CGFloat = titleYFromTop + titleHeight + 40
         
-        // Load gauge image
         var gaugeImage: NSImage?
         if let imagePath = job.gaugeImagePath {
             gaugeImage = loadGaugeImage(from: imagePath)
         }
-        
-        // Load front of home image
         var frontOfHomeImage: NSImage?
         if let imagePath = job.frontOfHomeImagePath {
             frontOfHomeImage = loadFrontOfHomeImage(from: imagePath)
         }
         
-        // Gauge photo section (top)
+        let locationFont = NSFont.boldSystemFont(ofSize: 12)
+        let locationAttributes: [NSAttributedString.Key: Any] = [
+            .font: locationFont,
+            .foregroundColor: NSColor.black
+        ]
+        let descriptionFont = NSFont.systemFont(ofSize: 11)
+        let descriptionAttributes: [NSAttributedString.Key: Any] = [
+            .font: descriptionFont,
+            .foregroundColor: NSColor.black
+        ]
+        
         if let image = gaugeImage {
-            // Calculate image size - make it fit nicely on the page
             let maxImageWidth: CGFloat = pageRect.width - 100
             let maxImageHeight: CGFloat = 200
             let imageAspectRatio = image.size.width / image.size.height
             var imageWidth = min(maxImageWidth, image.size.width)
             var imageHeight = imageWidth / imageAspectRatio
-            
             if imageHeight > maxImageHeight {
                 imageHeight = maxImageHeight
                 imageWidth = imageHeight * imageAspectRatio
             }
-            
             let imageX = (pageRect.width - imageWidth) / 2
-            // Convert top-down Y to bottom-up Y for CGContext drawing
-            let imageRectBottomUp = CGRect(x: imageX, y: pageRect.height - currentY - imageHeight, width: imageWidth, height: imageHeight)
-            drawNSImage(image, in: imageRectBottomUp, context: context)
+            let imagePdfY = pageRect.height - contentFromTop - imageHeight
+            drawNSImage(image, in: CGRect(x: imageX, y: imagePdfY, width: imageWidth, height: imageHeight), context: context)
+            contentFromTop += imageHeight + 15
             
-            // Calculate next currentY using top-down coordinates (for text drawing)
-            currentY = currentY + imageHeight + 15
+            "Location: Onsite".draw(at: CGPoint(x: 50, y: pageRect.height - contentFromTop - locationFont.lineHeight), withAttributes: locationAttributes)
+            contentFromTop += locationFont.lineHeight + 20
             
-            // Location text
-            let locationFont = NSFont.boldSystemFont(ofSize: 12)
-            let locationAttributes: [NSAttributedString.Key: Any] = [
-                .font: locationFont,
-                .foregroundColor: NSColor.black
-            ]
-            "Location: Onsite".draw(at: CGPoint(x: 50, y: currentY), withAttributes: locationAttributes)
-            currentY += 20
-            
-            // Description text
-            let descriptionFont = NSFont.systemFont(ofSize: 11)
-            let descriptionAttributes: [NSAttributedString.Key: Any] = [
-                .font: descriptionFont,
-                .foregroundColor: NSColor.black
-            ]
             let descriptionText = "Verifying pressure of equipment before ASTM E1105 water test which simulates real rain conditions."
-            let descriptionRect = CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: 40)
+            let descriptionRect = CGRect(x: 50, y: pageRect.height - contentFromTop - 40, width: pageRect.width - 100, height: 40)
             descriptionText.draw(in: descriptionRect, withAttributes: descriptionAttributes)
-            currentY = descriptionRect.maxY + 40
+            contentFromTop += 40 + 40
         }
         
-        // Front of property section (bottom)
         if let image = frontOfHomeImage {
-            // Calculate image size - make it fit nicely on the page
             let maxImageWidth: CGFloat = pageRect.width - 100
             let maxImageHeight: CGFloat = 200
             let imageAspectRatio = image.size.width / image.size.height
             var imageWidth = min(maxImageWidth, image.size.width)
             var imageHeight = imageWidth / imageAspectRatio
-            
             if imageHeight > maxImageHeight {
                 imageHeight = maxImageHeight
                 imageWidth = imageHeight * imageAspectRatio
             }
-            
             let imageX = (pageRect.width - imageWidth) / 2
-            // Convert top-down Y to bottom-up Y for CGContext drawing
-            let imageRectBottomUp = CGRect(x: imageX, y: pageRect.height - currentY - imageHeight, width: imageWidth, height: imageHeight)
-            drawNSImage(image, in: imageRectBottomUp, context: context)
+            let imagePdfY = pageRect.height - contentFromTop - imageHeight
+            drawNSImage(image, in: CGRect(x: imageX, y: imagePdfY, width: imageWidth, height: imageHeight), context: context)
+            contentFromTop += imageHeight + 15
             
-            // Calculate next currentY using top-down coordinates (for text drawing)
-            currentY = currentY + imageHeight + 15
+            "Front of Property".draw(at: CGPoint(x: 50, y: pageRect.height - contentFromTop - locationFont.lineHeight), withAttributes: locationAttributes)
+            contentFromTop += locationFont.lineHeight + 20
             
-            // Location text
-            let locationFont = NSFont.boldSystemFont(ofSize: 12)
-            let locationAttributes: [NSAttributedString.Key: Any] = [
-                .font: locationFont,
-                .foregroundColor: NSColor.black
-            ]
-            "Front of Property".draw(at: CGPoint(x: 50, y: currentY), withAttributes: locationAttributes)
-            currentY += 20
-            
-            // Description text
-            let descriptionFont = NSFont.systemFont(ofSize: 11)
-            let descriptionAttributes: [NSAttributedString.Key: Any] = [
-                .font: descriptionFont,
-                .foregroundColor: NSColor.black
-            ]
             let descriptionText = "Image of the front of the property for address verification."
-            let descriptionRect = CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: 40)
+            let descriptionRect = CGRect(x: 50, y: pageRect.height - contentFromTop - 40, width: pageRect.width - 100, height: 40)
             descriptionText.draw(in: descriptionRect, withAttributes: descriptionAttributes)
         }
         
-        // Footer at bottom
         let footerFont = NSFont.systemFont(ofSize: 10)
         let footerAttributes: [NSAttributedString.Key: Any] = [
             .font: footerFont,
             .foregroundColor: NSColor.gray
         ]
-        
-        // Use cleaned address if available, fallback to original
-        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
-        let address = "\(addressToUse), \(job.city ?? ""), \(job.state ?? "") \(job.zip ?? "")".uppercased()
-        let footerY = pageRect.height - 50  // 50 points from bottom (top-down coordinates)
+        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+        let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+        let footerY: CGFloat = 50
         address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        let pageText = "Page \(pageNumber) of \(totalPages)"
+        let pageTextSize = pageText.size(withAttributes: footerAttributes)
+        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+    }
+    
+    private func loadPartsOfWindowImage() -> NSImage? {
+        if let imagePath = Bundle.main.path(forResource: "PartsOfWindow", ofType: "png", inDirectory: "images"),
+           let image = NSImage(contentsOfFile: imagePath) {
+            return image
+        }
+        if let imagePath = Bundle.main.path(forResource: "PartsOfWindow", ofType: "png"),
+           let image = NSImage(contentsOfFile: imagePath) {
+            return image
+        }
+        if let image = NSImage(named: "PartsOfWindow") ?? NSImage(named: "images/PartsOfWindow") {
+            return image
+        }
+        print("MYDEBUG →", "Parts of Window image not found")
+        return nil
+    }
+    
+    private func drawPartsOfWindowPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
+        let titleHeight: CGFloat = 30
+        let titleTopFromTop: CGFloat = 30 + Self.layoutShiftDown
+        let titleRect = CGRect(x: 50, y: pageRect.height - titleTopFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
+        let titleFont = NSFont.boldSystemFont(ofSize: 24)
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: titleFont,
+            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)
+        ]
+        "PARTS OF A WINDOW".draw(in: titleRect, withAttributes: titleAttributes)
         
+        var currentYFromTop: CGFloat = titleTopFromTop + titleHeight + 40
+        if let image = loadPartsOfWindowImage() {
+            let maxImageWidth = pageRect.width - 100
+            let maxImageHeight = pageRect.height - currentYFromTop - 100
+            let imageAspectRatio = image.size.width / image.size.height
+            var imageWidth = min(maxImageWidth, image.size.width)
+            var imageHeight = imageWidth / imageAspectRatio
+            if imageHeight > maxImageHeight {
+                imageHeight = maxImageHeight
+                imageWidth = imageHeight * imageAspectRatio
+            }
+            let imageX = (pageRect.width - imageWidth) / 2
+            let imagePdfY = pageRect.height - currentYFromTop - imageHeight
+            drawNSImage(image, in: CGRect(x: imageX, y: imagePdfY, width: imageWidth, height: imageHeight), context: context)
+        }
+        
+        let footerFont = NSFont.systemFont(ofSize: 10)
+        let footerAttributes: [NSAttributedString.Key: Any] = [.font: footerFont, .foregroundColor: NSColor.gray]
+        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+        let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+        let footerY: CGFloat = 50
+        address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        let pageText = "Page \(pageNumber) of \(totalPages)"
+        let pageTextSize = pageText.size(withAttributes: footerAttributes)
+        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+    }
+    
+    private func drawCommonTermsWindowsPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
+        let contentWidth = pageRect.width - 100  // Match other pages - 50pt margins
+        var currentYFromTop: CGFloat = 30 + Self.layoutShiftDown
+        
+        let titleFont = NSFont.boldSystemFont(ofSize: 23)
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: titleFont,
+            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)
+        ]
+        let titleHeight: CGFloat = 30
+        let titleRect = CGRect(x: 50, y: pageRect.height - currentYFromTop - titleHeight, width: contentWidth, height: titleHeight)
+        "COMMON TERMS - WINDOWS".draw(in: titleRect, withAttributes: titleAttributes)
+        currentYFromTop += titleHeight + 10
+        
+        let sectionHeadingFont = NSFont.boldSystemFont(ofSize: 11)
+        let sectionHeadingAttributes: [NSAttributedString.Key: Any] = [.font: sectionHeadingFont, .foregroundColor: NSColor.black]
+        let bodyFont = NSFont.systemFont(ofSize: 10)
+        let bodyAttributes: [NSAttributedString.Key: Any] = [.font: bodyFont, .foregroundColor: NSColor.black]
+        
+        func drawBlock(_ text: String, attrs: [NSAttributedString.Key: Any], spacing: CGFloat) {
+            let rect = text.boundingRect(with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attrs, context: nil)
+            let drawHeight = rect.height + 2  // Buffer to avoid clipping from rounding
+            let pdfY = pageRect.height - currentYFromTop - drawHeight
+            text.draw(in: CGRect(x: 50, y: pdfY, width: contentWidth, height: drawHeight), withAttributes: attrs)
+            currentYFromTop += drawHeight + spacing
+        }
+        func drawLine(_ text: String, attrs: [NSAttributedString.Key: Any], spacing: CGFloat) {
+            let rect = text.boundingRect(with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attrs, context: nil)
+            let drawHeight = rect.height + 2  // Buffer to avoid clipping; constrains width for wrapping
+            let pdfY = pageRect.height - currentYFromTop - drawHeight
+            text.draw(in: CGRect(x: 50, y: pdfY, width: contentWidth, height: drawHeight), withAttributes: attrs)
+            currentYFromTop += drawHeight + spacing
+        }
+        
+        drawBlock("Cyclical Wind Pressures - Why Hurricanes can Cause Windows to Fail.", attrs: sectionHeadingAttributes, spacing: 5)
+        drawBlock("Cyclical wind pressures refer to the fluctuating pressures exerted on structures by the wind as it changes direction and intensity. These pressures are not constant and vary cyclically, especially as a hurricane's eye passes by. In a hurricane, wind changes rapidly in speed and direction, leading to cyclical or fluctuating pressures.", attrs: bodyAttributes, spacing: 5)
+        drawBlock("The effects are described as twofold:", attrs: bodyAttributes, spacing: 4)
+        drawBlock("1. Positive Pressure: When wind strikes a building, it creates a positive pressure on the side facing the wind. This pressure attempts to push the building away from the wind.", attrs: bodyAttributes, spacing: 4)
+        drawBlock("2. Negative Pressure (Suction): On the leeward side (the side away from the wind) and over the roof, negative pressures are created. These suction forces attempt to pull parts of the building away from the main structure.", attrs: bodyAttributes, spacing: 6)
+        drawLine("Window glazing failure", attrs: sectionHeadingAttributes, spacing: 4)
+        drawBlock("Refers to the deterioration or malfunction of the glazing system in a window. Glazing is the process of installing glass panes into window frames, which provides insulation, soundproofing, and weather resistance.", attrs: bodyAttributes, spacing: 4)
+        drawBlock("Reasons for glazing failure include:", attrs: bodyAttributes, spacing: 4)
+        drawBlock("• Seal failure: In double or triple-pane windows, the seal between panes can degrade, leading to loss of insulation, moisture buildup, or condensation.", attrs: bodyAttributes, spacing: 4)
+        drawBlock("• Glass breakage: Due to manufacturing defects, impacts, or temperature fluctuations.", attrs: bodyAttributes, spacing: 4)
+        drawBlock("• Deterioration of glazing compounds or putty: These materials hold glass panes in place; over time, they can harden, crack, or lose adhesive properties, causing loose panes or water infiltration.", attrs: bodyAttributes, spacing: 4)
+        drawBlock("• Mechanical failure: Hardware components (clips, fasteners) can corrode, loosen, or break, making the system unstable.", attrs: bodyAttributes, spacing: 4)
+        drawBlock("Addressing this failure typically involves repairing or replacing affected components, or sometimes the entire window unit.", attrs: bodyAttributes, spacing: 6)
+        drawLine("Ingested or Displaced Gasket", attrs: sectionHeadingAttributes, spacing: 4)
+        drawBlock("A gasket that has been moved from place by storm force winds, or impacts.", attrs: bodyAttributes, spacing: 6)
+        drawLine("Window Fog", attrs: sectionHeadingAttributes, spacing: 4)
+        drawBlock("Windows can become foggy after a hurricane wind event, primarily due to condensation and seal failures in double or triple-pane windows.", attrs: bodyAttributes, spacing: 4)
+        drawBlock("Reasons for window fog include:", attrs: bodyAttributes, spacing: 4)
+        drawBlock("• Condensation: Significant fluctuations in temperature and humidity during a hurricane can cause warm, moist air to contact cooler glass surfaces, forming condensation, especially if the window is poorly insulated or if there's a large indoor-outdoor temperature difference.", attrs: bodyAttributes, spacing: 4)
+        drawBlock("• Seal failure: Hurricane winds and pressure changes can cause seals in double or triple-pane windows to fail, allowing insulating gas/air to escape and moisture to enter the space between panes, leading to condensation and fogging.", attrs: bodyAttributes, spacing: 4)
+        drawBlock("• Water infiltration: Damage to the window frame, glazing, or seals during a hurricane can allow water to penetrate the assembly and cause fogging, potentially leading to further damage.", attrs: bodyAttributes, spacing: 6)
+        
+        let footerFont = NSFont.systemFont(ofSize: 10)
+        let footerAttributes: [NSAttributedString.Key: Any] = [.font: footerFont, .foregroundColor: NSColor.gray]
+        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+        let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+        let footerY: CGFloat = 50
+        address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         let pageText = "Page \(pageNumber) of \(totalPages)"
         let pageTextSize = pageText.size(withAttributes: footerAttributes)
         pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
@@ -2728,15 +2811,16 @@ struct FieldResultsPackage {
             .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
-        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
+        let titleYFromTop: CGFloat = 80 + Self.layoutShiftDown  // Moved down from 30 to 80 to match overview
         // Use backwards coordinate technique - bottom Y to render at top
         let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "SOURCES".draw(in: titleRect, withAttributes: titleAttributes)
         
-        var currentY = titleRect.maxY + 30
+        // Content below title - gap from title so first citation isn't cramped
+        var currentY = titleRect.maxY - 40
         
-        // Citation font (smaller, black)
-        let citationFont = NSFont.systemFont(ofSize: 11)
+        // Citation font (black)
+        let citationFont = NSFont.systemFont(ofSize: 10)
         
         // Create paragraph style with hanging indent (first line flush left, continuation lines indented)
         let paragraphStyle = NSMutableParagraphStyle()
@@ -2749,30 +2833,39 @@ struct FieldResultsPackage {
             .paragraphStyle: paragraphStyle
         ]
         
+        let citationWidth = pageRect.width - 100
+        let citationSpacing: CGFloat = 16
+        
         // First citation (FEMA) - hanging indent
-        let citation1 = "1 Federal Emergency Management Agency. \"Cyclical Wind Pressures in Hurricanes.\" Home Builder's Guide to Coastal Construction Technical Fact Sheet Series, no. 1.3, Dec. 2018, www.fema.gov/sites/default/files/2020-07/fema_p499_fact_sheet_1-3_cyclical_wind_pressures.pdf."
-        let citation1Rect = CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: 100)
-        let citation1BoundingRect = citation1.boundingRect(with: CGSize(width: citation1Rect.width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: citationAttributes, context: nil)
-        citation1.draw(in: CGRect(x: 50, y: currentY, width: citation1Rect.width, height: citation1BoundingRect.height), withAttributes: citationAttributes)
-        currentY += citation1BoundingRect.height + 20
+        let citation1 = "1 Federal Emergency Management Agency. \"Guidelines for Wind Vulnerability Assessments of Existing Critical Facilities.\" Sept. 2019, www.fema.gov/sites/default/files/2020-07/guidelines-wind-vulnerability.pdf. Accessed 26 Dec. 2025."
+        let citation1BoundingRect = citation1.boundingRect(with: CGSize(width: citationWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: citationAttributes, context: nil)
+        let citation1DrawHeight = citation1BoundingRect.height + 2  // Buffer to avoid clipping
+        citation1.draw(in: CGRect(x: 50, y: currentY - citation1DrawHeight, width: citationWidth, height: citation1DrawHeight), withAttributes: citationAttributes)
+        currentY -= citation1DrawHeight + citationSpacing
         
-        // Second citation (NOAA) - hanging indent
-        let citation2 = "2 Beven, J. L., II, et al. National Hurricane Center Tropical Cyclone Report: Hurricane Milton (AL142024). National Hurricane Center, 31 Mar. 2025, https://www.nhc.noaa.gov/data/tcr/AL142024_Milton.pdf."
-        let citation2Rect = CGRect(x: 50, y: currentY, width: pageRect.width - 100, height: 100)
-        let citation2BoundingRect = citation2.boundingRect(with: CGSize(width: citation2Rect.width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: citationAttributes, context: nil)
-        citation2.draw(in: CGRect(x: 50, y: currentY, width: citation2Rect.width, height: citation2BoundingRect.height), withAttributes: citationAttributes)
+        // Second citation (Visual Crossing) - hanging indent
+        let citation2 = "2 Visual Crossing Corporation. \"Historical Weather Data for 606 Lime St, Auburndale, FL 33823, United States.\" Visual Crossing Weather History, 2024, https://www.visualcrossing.com/weather-history/606%20Lime%20St,%20Auburndale,%20FL%2033823/us/2024-10-09/. Accessed 4 Dec. 2025."
+        let citation2BoundingRect = citation2.boundingRect(with: CGSize(width: citationWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: citationAttributes, context: nil)
+        let citation2DrawHeight = citation2BoundingRect.height + 2  // Buffer to avoid clipping
+        citation2.draw(in: CGRect(x: 50, y: currentY - citation2DrawHeight, width: citationWidth, height: citation2DrawHeight), withAttributes: citationAttributes)
+        currentY -= citation2DrawHeight + citationSpacing
         
-        // Footer at bottom
+        // Third citation (NOAA) - hanging indent
+        let citation3 = "3 Beven, J. L., II, et al. National Hurricane Center Tropical Cyclone Report: Hurricane Milton (AL142024). National Hurricane Center, 31 Mar. 2025, https://www.nhc.noaa.gov/data/tcr/AL142024_Milton.pdf. Accessed Nov 18, 2025."
+        let citation3BoundingRect = citation3.boundingRect(with: CGSize(width: citationWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: citationAttributes, context: nil)
+        let citation3DrawHeight = citation3BoundingRect.height + 2  // Buffer to avoid clipping
+        citation3.draw(in: CGRect(x: 50, y: currentY - citation3DrawHeight, width: citationWidth, height: citation3DrawHeight), withAttributes: citationAttributes)
+        
+        // Footer at bottom of page (fixed band at Y=50)
         let footerFont = NSFont.systemFont(ofSize: 10)
         let footerAttributes: [NSAttributedString.Key: Any] = [
             .font: footerFont,
             .foregroundColor: NSColor.gray
         ]
         
-        // Use cleaned address if available, fallback to original
-        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
         let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
-        let footerY = pageRect.height - 50  // 50 points from bottom (top-down coordinates)
+        let footerY: CGFloat = 50
         address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         
         let pageText = "Page \(pageNumber) of \(totalPages)"
@@ -2781,112 +2874,83 @@ struct FieldResultsPackage {
     }
     
     private func drawCredentialsPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
-        // Title at top - "CREDENTIALS" - moved down ~50 points
+        // Title at top - "CREDENTIALS"
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
             .font: titleFont,
             .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)  // Medium blue #276091
         ]
         let titleHeight: CGFloat = 30
-        let titleYFromTop: CGFloat = 80  // Moved down from 30 to 80 to match overview
-        // Use backwards coordinate technique - bottom Y to render at top
+        let titleYFromTop: CGFloat = 65 + Self.layoutShiftDown
         let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "CREDENTIALS".draw(in: titleRect, withAttributes: titleAttributes)
         
-        var currentY = titleRect.maxY + 30
+        // Content below title - gap from title so first name isn't cramped
+        var currentY = titleRect.maxY - 32
+        let contentWidth = pageRect.width - 100
         
-        // Body font for regular text
-        let bodyFont = NSFont.systemFont(ofSize: 11)
+        // Body font for regular text - slightly smaller to fit above footer
+        let bodyFont = NSFont.systemFont(ofSize: 10)
+        let bodyParagraphStyle = NSMutableParagraphStyle()
+        bodyParagraphStyle.lineSpacing = 1.5  // Minimal extra space between wrapped lines
         let bodyAttributes: [NSAttributedString.Key: Any] = [
             .font: bodyFont,
-            .foregroundColor: NSColor.black
+            .foregroundColor: NSColor.black,
+            .paragraphStyle: bodyParagraphStyle
         ]
         
         // Bold font for names
-        let nameFont = NSFont.boldSystemFont(ofSize: 11)
+        let nameFont = NSFont.boldSystemFont(ofSize: 10)
         let nameAttributes: [NSAttributedString.Key: Any] = [
             .font: nameFont,
             .foregroundColor: NSColor.black
         ]
         
-        // Helper function to draw text with wrapping
-        func drawWrappedText(_ text: String, attributes: [NSAttributedString.Key: Any], y: CGFloat, width: CGFloat) -> CGFloat {
-            let textRect = CGRect(x: 50, y: y, width: width, height: 0)
+        // Helper: draw text with top at currentY, return next Y (below drawn block)
+        func drawWrappedTextDown(_ text: String, attributes: [NSAttributedString.Key: Any], topY: CGFloat, width: CGFloat) -> CGFloat {
             let boundingRect = text.boundingRect(with: CGSize(width: width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attributes, context: nil)
-            text.draw(in: CGRect(x: 50, y: y, width: width, height: boundingRect.height), withAttributes: attributes)
-            return y + boundingRect.height
+            let drawHeight = ceil(boundingRect.height) + 4  // Buffer to avoid clipping (matches Summary fix - lineSpacing needs extra room)
+            let drawY = topY - drawHeight
+            text.draw(in: CGRect(x: 50, y: drawY, width: width, height: drawHeight), withAttributes: attributes)
+            return drawY
         }
         
+        // Vertical spacing - tight between chunks within a person; moderate between people
+        let paraSpacing: CGFloat = 1  // Between name/licenses/education/experience within a person
+        let sectionSpacing: CGFloat = 12  // Between different people
+        
         // K. Renevier, P.E.
-        let renevierName = "K. Renevier, P.E."
-        currentY = drawWrappedText(renevierName, attributes: nameAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 8
-        
-        let renevierLicenses = "Licenses: Florida Professional Engineering License #98372. Also holds a professional engineering license in Alabama, Louisiana, and Texas."
-        currentY = drawWrappedText(renevierLicenses, attributes: bodyAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 8
-        
-        let renevierEducation = "Education: B.S. Civil Engineering from the University of Oklahoma; M.S. Civil Engineering with an Emphasis in Structures from the University of Oklahoma."
-        currentY = drawWrappedText(renevierEducation, attributes: bodyAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 8
-        
-        let renevierExperience = "Experience: Has over a decade of engineering experience, including seven years as a licensed professional engineer. Specializes in Forensic and Design Engineering for residential, commercial, and industrial projects. Has assessed structures damaged by significant tornadoes (e.g., Joplin, MO) and major hurricanes across the Gulf Coast since 2018. Assists communities impacted by natural disasters."
-        currentY = drawWrappedText(renevierExperience, attributes: bodyAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 20
+        currentY = drawWrappedTextDown("K. Renevier, P.E.", attributes: nameAttributes, topY: currentY, width: contentWidth) - paraSpacing
+        currentY = drawWrappedTextDown("Licenses: Florida Professional Engineering License #98372. Also holds a professional engineering license in Alabama, Louisiana, and Texas.", attributes: bodyAttributes, topY: currentY, width: contentWidth) - paraSpacing
+        currentY = drawWrappedTextDown("Education: B.S. Civil Engineering from the University of Oklahoma; M.S. Civil Engineering with an Emphasis in Structures from the University of Oklahoma.", attributes: bodyAttributes, topY: currentY, width: contentWidth) - paraSpacing
+        currentY = drawWrappedTextDown("Experience: Has over a decade of engineering experience, including seven years as a licensed professional engineer. Specializes in Forensic and Design Engineering for residential, commercial, and industrial projects. Has assessed structures damaged by significant tornadoes (e.g., Joplin, MO) and major hurricanes across the Gulf Coast since 2018. Assists communities impacted by natural disasters.", attributes: bodyAttributes, topY: currentY, width: contentWidth) - sectionSpacing
         
         // Yonatan Z. Rotenberg
-        let rotenbergName = "Yonatan Z. Rotenberg"
-        currentY = drawWrappedText(rotenbergName, attributes: nameAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 8
-        
-        let rotenbergEducation = "Education: B.S. Mechanical Engineering from Florida International University."
-        currentY = drawWrappedText(rotenbergEducation, attributes: bodyAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 8
-        
-        let rotenbergExperience = "Experience: Has a decade of engineering experience. Responsible for evaluating the structural safety of various components and systems. Has authored numerous engineering documents and reports, holds patents, and is a co-author on research publications. Previously worked as a research assistant in mechanical testing and metallurgy."
-        currentY = drawWrappedText(rotenbergExperience, attributes: bodyAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 20
+        currentY = drawWrappedTextDown("Yonatan Z. Rotenberg", attributes: nameAttributes, topY: currentY, width: contentWidth) - paraSpacing
+        currentY = drawWrappedTextDown("Education: B.S. Mechanical Engineering from Florida International University.", attributes: bodyAttributes, topY: currentY, width: contentWidth) - paraSpacing
+        currentY = drawWrappedTextDown("Experience: Has a decade of engineering experience. Responsible for evaluating the structural safety of various components and systems. Has authored numerous engineering documents and reports, holds patents, and is a co-author on research publications. Previously worked as a research assistant in mechanical testing and metallurgy.", attributes: bodyAttributes, topY: currentY, width: contentWidth) - sectionSpacing
         
         // Stuart Jay Clarke III, CGC & CCC
-        let clarkeName = "Stuart Jay Clarke III, CGC & CCC"
-        currentY = drawWrappedText(clarkeName, attributes: nameAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 8
-        
-        let clarkeLicenses = "Licenses: Roofing Contractor - CCC1327185; General Contractor - CGC1518899."
-        currentY = drawWrappedText(clarkeLicenses, attributes: bodyAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 8
-        
-        let clarkeEducation = "Education: Bachelor of Science from FSU & UCF. Field of Study includes Chemical Engineering, Chemistry, and Forensic Science."
-        currentY = drawWrappedText(clarkeEducation, attributes: bodyAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 8
-        
-        let clarkeExperience = "Experience: Serves as an Expert Witness and a Roof consultant for award-winning architects. Is a U.S. Patent holder. Has overseen the installation of thousands of quality roofs and completed over 3,000 roof inspections and reports across the southeastern United States. Worked as a Roofing expert and forensic inspector for one of Florida's largest insurance companies. Is an original member of the No Blue Roof charity and one of only 10 roofing contractors to receive an award from Miami Dade County for outstanding service. Was part of the original My Safe Florida Home team, contributing to improving roof safety and strengthening the roofing code in Florida."
-        currentY = drawWrappedText(clarkeExperience, attributes: bodyAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 20
+        currentY = drawWrappedTextDown("Stuart Jay Clarke III, CGC & CCC", attributes: nameAttributes, topY: currentY, width: contentWidth) - paraSpacing
+        currentY = drawWrappedTextDown("Licenses: Roofing Contractor - CCC1327185; General Contractor - CGC1518899.", attributes: bodyAttributes, topY: currentY, width: contentWidth) - paraSpacing
+        currentY = drawWrappedTextDown("Education: Bachelor of Science from FSU & UCF. Field of Study includes Chemical Engineering, Chemistry, and Forensic Science.", attributes: bodyAttributes, topY: currentY, width: contentWidth) - paraSpacing
+        currentY = drawWrappedTextDown("Experience: Serves as an Expert Witness and a Roof consultant for award-winning architects. Is a U.S. Patent holder. Has overseen the installation of thousands of quality roofs and completed over 3,000 roof inspections and reports across the southeastern United States. Worked as a Roofing expert and forensic inspector for one of Florida's largest insurance companies. Is an original member of the No Blue Roof charity and one of only 10 roofing contractors to receive an award from Miami Dade County for outstanding service. Was part of the original My Safe Florida Home team, contributing to improving roof safety and strengthening the roofing code in Florida.", attributes: bodyAttributes, topY: currentY, width: contentWidth) - sectionSpacing
         
         // Joel S. Jaroslawicz
-        let jaroslawiczName = "Joel S. Jaroslawicz"
-        currentY = drawWrappedText(jaroslawiczName, attributes: nameAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 8
+        currentY = drawWrappedTextDown("Joel S. Jaroslawicz", attributes: nameAttributes, topY: currentY, width: contentWidth) - paraSpacing
+        currentY = drawWrappedTextDown("Licenses/Certifications: Holds a 620 All Lines Adjuster License; FEMA Certified for IS-285 (Flood Damage Appraisal Management); License # W263548.", attributes: bodyAttributes, topY: currentY, width: contentWidth) - paraSpacing
+        currentY = drawWrappedTextDown("Experience: Has over a decade of experience in the insurance industry. Has worked as both an Independent Adjuster and a Public Adjuster, providing a dual perspective on insurance claims, which makes him valuable in understanding, evaluating, and adjusting claims from both the insurer's and the claimant's viewpoints.", attributes: bodyAttributes, topY: currentY, width: contentWidth)
         
-        let jaroslawiczLicenses = "Licenses/Certifications: Holds a 620 All Lines Adjuster License; FEMA Certified for IS-285 (Flood Damage Appraisal Management); License # W263548."
-        currentY = drawWrappedText(jaroslawiczLicenses, attributes: bodyAttributes, y: currentY, width: pageRect.width - 100)
-        currentY += 8
-        
-        let jaroslawiczExperience = "Experience: Has over a decade of experience in the insurance industry. Has worked as both an Independent Adjuster and a Public Adjuster, providing a dual perspective on insurance claims, which makes him valuable in understanding, evaluating, and adjusting claims from both the insurer's and the claimant's viewpoints."
-        currentY = drawWrappedText(jaroslawiczExperience, attributes: bodyAttributes, y: currentY, width: pageRect.width - 100)
-        
-        // Footer at bottom
+        // Footer at bottom of page (fixed band at Y=50)
         let footerFont = NSFont.systemFont(ofSize: 10)
         let footerAttributes: [NSAttributedString.Key: Any] = [
             .font: footerFont,
             .foregroundColor: NSColor.gray
         ]
         
-        // Use cleaned address if available, fallback to original
-        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
-        let address = "\(addressToUse), \(job.city ?? ""), \(job.state ?? "") \(job.zip ?? "")".uppercased()
-        let footerY = pageRect.height - 50  // 50 points from bottom (top-down coordinates)
+        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+        let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+        let footerY: CGFloat = 50
         address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         
         let pageText = "Page \(pageNumber) of \(totalPages)"
@@ -3307,8 +3371,9 @@ struct FieldResultsPackage {
             lines.append(DocxSummaryLine(text: "Water leakage was observed following the test.", spacingBefore: 0, spacingAfter: tightSpacing))
         } else if testResult.caseInsensitiveCompare("Unable to Test") == .orderedSame || window.isInaccessible {
             lines.append(DocxSummaryLine(text: "Window was not tested.", spacingBefore: 0, spacingAfter: tightSpacing))
-            // Add reason if available (using optional chaining for backward compatibility)
-            if let reason = window.value(forKey: "untestedReason") as? String, !reason.isEmpty {
+            // Add reason if available (only if entity has attribute to avoid KVC exception)
+            if window.entity.attributesByName["untestedReason"] != nil,
+               let reason = window.value(forKey: "untestedReason") as? String, !reason.isEmpty {
                 lines.append(DocxSummaryLine(text: "Reason: \(reason)", spacingBefore: 0, spacingAfter: tightSpacing))
             }
         } else {
@@ -3954,7 +4019,7 @@ fileprivate final class DocxTemplateRenderer {
         print("✅ About to add Purpose/Observations/Weather History page...")
         // Add Purpose/Observations/Weather History page
         print("📄 Generating Purpose/Observations/Weather History page...")
-        let hurricaneMiltonResource = loadHurricaneMiltonResource()
+        let hurricaneMiltonResource = loadHurricaneImageResource(for: job)
         let wideMapResource = loadWideMapImageResource(for: job)
         print("📄 Hurricane Milton resource loaded: \(hurricaneMiltonResource != nil)")
         print("📄 Wide map resource loaded: \(wideMapResource != nil), job.wideMapImagePath: \(job.wideMapImagePath ?? "nil")")
@@ -4401,26 +4466,46 @@ fileprivate final class DocxTemplateRenderer {
         """
     }
     
-    private func loadHurricaneMiltonResource() -> DocxImageResource? {
-        // Try loading from images directory first, then root
+    private func loadHurricaneImageResource(for job: Job) -> DocxImageResource? {
+        // Try custom image first, then default bundle image
         var imageData: Data?
         var image: NSImage?
         var fileExtension = "png"
         
-        if let path = Bundle.main.path(forResource: "HurricaneMilton", ofType: "png", inDirectory: "images"),
-           let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
-            imageData = data
-            image = NSImage(data: data)
-        } else if let path = Bundle.main.path(forResource: "HurricaneMilton", ofType: "png"),
-                  let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
-            imageData = data
-            image = NSImage(data: data)
-        } else if let img = NSImage(named: "HurricaneMilton") ?? NSImage(named: "images/HurricaneMilton"),
-                  let tiffData = img.tiffRepresentation,
-                  let bitmapRep = NSBitmapImageRep(data: tiffData),
-                  let data = bitmapRep.representation(using: .png, properties: [:]) {
-            imageData = data
-            image = img
+        // Custom image from job
+        if let customImagePath = job.customHurricaneImagePath {
+            let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let imageURL = documentsDirectory.appendingPathComponent("custom_hurricane_images").appendingPathComponent(customImagePath)
+            if FileManager.default.fileExists(atPath: imageURL.path),
+               let data = try? Data(contentsOf: imageURL),
+               let img = NSImage(data: data) {
+                imageData = data
+                image = img
+                fileExtension = imageURL.pathExtension.lowercased()
+                if fileExtension.isEmpty { fileExtension = "jpg" }
+            }
+        }
+        
+        // Fallback to default bundle image
+        if imageData == nil || image == nil {
+            if let path = Bundle.main.path(forResource: "HurricaneMilton", ofType: "png", inDirectory: "images"),
+               let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
+                imageData = data
+                image = NSImage(data: data)
+                fileExtension = "png"
+            } else if let path = Bundle.main.path(forResource: "HurricaneMilton", ofType: "png"),
+                      let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
+                imageData = data
+                image = NSImage(data: data)
+                fileExtension = "png"
+            } else if let img = NSImage(named: "HurricaneMilton") ?? NSImage(named: "images/HurricaneMilton"),
+                      let tiffData = img.tiffRepresentation,
+                      let bitmapRep = NSBitmapImageRep(data: tiffData),
+                      let data = bitmapRep.representation(using: .png, properties: [:]) {
+                imageData = data
+                image = img
+                fileExtension = "png"
+            }
         }
         
         guard let data = imageData, let img = image else { return nil }
@@ -4525,17 +4610,17 @@ fileprivate final class DocxTemplateRenderer {
         
         // Salutation
         let firstName = clientName.components(separatedBy: " ").first ?? clientName
-        xml += xmlEngineeringLetterParagraph("Greetings \(firstName),", spacingBefore: 0, spacingAfter: 120)
+        xml += xmlEngineeringLetterParagraph("Greetings \(firstName),", spacingBefore: 80, spacingAfter: 120)
         
         // Body paragraphs
         let paragraph1 = "True Reports Inc., in collaboration with my individual firm, has conducted an evaluation of the condition of the windows at the property located at \(addressToUse.isEmpty ? "the property" : addressToUse), as detailed in the attached report. The opinions presented in this report have been formulated within a reasonable degree of professional certainty. These opinions are based on a review of the available information, associated research, as well as our knowledge, training and experience. True Reports Inc. reserves the right to update this report should additional information become available. The True Reports Inc's investigation of the property at \(addressToUse.isEmpty ? "the property" : addressToUse) was performed by the True Reports Inc. Field Inspection Team under my direct supervision."
-        xml += xmlEngineeringLetterParagraph(paragraph1, spacingBefore: 0, spacingAfter: 120)
+        xml += xmlEngineeringLetterParagraph(paragraph1, spacingBefore: 0, spacingAfter: 60)
         
         let paragraph2 = "It is my professional opinion that the property sustained damage to the windows of the building during Hurricane Milton. Windows will need to be repaired or replaced. All repairs must be in compliance with the Florida Building Code: Existing Building 2023."
-        xml += xmlEngineeringLetterParagraph(paragraph2, spacingBefore: 0, spacingAfter: 120)
+        xml += xmlEngineeringLetterParagraph(paragraph2, spacingBefore: 0, spacingAfter: 60)
         
         let paragraph3 = "True Reports Inc. appreciates the opportunity to assist with this inspection. Please call if you have any questions."
-        xml += xmlEngineeringLetterParagraph(paragraph3, spacingBefore: 0, spacingAfter: 120)
+        xml += xmlEngineeringLetterParagraph(paragraph3, spacingBefore: 0, spacingAfter: 60)
         
         // Closing
         xml += xmlEngineeringLetterParagraph("Respectfully Submitted,", spacingBefore: 0, spacingAfter: 120)
@@ -5009,10 +5094,17 @@ fileprivate final class DocxTemplateRenderer {
         let observationsText = "Observations are presented within this report. Property condition is described in photograph captions and elsewhere. Full-resolution images are retained electronically and can be provided upon request."
         xml += xmlParagraph(observationsText, spacingBefore: 0, spacingAfter: 240)
         
-        // WEATHER HISTORY Section
+        // WEATHER HISTORY Section - use custom text if set, otherwise default
         xml += xmlBoldParagraph("WEATHER HISTORY:", color: "5BA3D6", spacingBefore: 0, spacingAfter: 0)
-        let weatherHistoryText = "The home was directly in the path of Hurricane Milton. The wind gusts in the area were recorded at over 170 mph on October 9, 2024. NOAA reports sustained winds of between 61 and 91 mph."
-        xml += xmlParagraphWithSuperscript(weatherHistoryText, superscriptText: "2", spacingBefore: 0, spacingAfter: 240)
+        let weatherHistoryText: String
+        if let customWeatherText = job.customWeatherText,
+           !customWeatherText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            weatherHistoryText = customWeatherText
+            xml += xmlParagraph(weatherHistoryText, spacingBefore: 0, spacingAfter: 240)
+        } else {
+            weatherHistoryText = "The home was directly in the path of Hurricane Milton. The wind gusts in the area were recorded at over 170 mph on October 9, 2024. NOAA reports sustained winds of between 61 and 91 mph."
+            xml += xmlParagraphWithSuperscript(weatherHistoryText, superscriptText: "2", spacingBefore: 0, spacingAfter: 240)
+        }
         
         // First image: Hurricane Milton radar (static)
         if let hurricaneRef = hurricaneImageRef {
@@ -5301,15 +5393,9 @@ fileprivate final class DocxTemplateRenderer {
     }
     
     private func extractNumberFromSpecimenName(_ name: String) -> String {
-        // Try to find a number at the end of the string
-        if let lastSpaceIndex = name.lastIndex(of: " ") {
-            let numberPart = String(name[name.index(after: lastSpaceIndex)...])
-            // Check if it's a valid number
-            if Int(numberPart) != nil {
-                return numberPart
-            }
+        if let numberRange = name.range(of: #"\d+"#, options: .regularExpression) {
+            return String(name[numberRange])
         }
-        // If no number found, return original (fallback for names like "W01")
         return name
     }
 
@@ -7106,15 +7192,9 @@ extension FieldResultsPackage {
     /// Extract just the number from specimen names like "Specimen 2", "Specimen 3", etc.
     /// Returns the number as a string, or the original string if no number is found
     private func extractNumberFromSpecimenName(_ name: String) -> String {
-        // Try to find a number at the end of the string
-        if let lastSpaceIndex = name.lastIndex(of: " ") {
-            let numberPart = String(name[name.index(after: lastSpaceIndex)...])
-            // Check if it's a valid number
-            if Int(numberPart) != nil {
-                return numberPart
-            }
+        if let numberRange = name.range(of: #"\d+"#, options: .regularExpression) {
+            return String(name[numberRange])
         }
-        // If no number found, return original (fallback for names like "W01")
         return name
     }
     
