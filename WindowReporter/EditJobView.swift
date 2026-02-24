@@ -94,15 +94,8 @@ struct EditJobView: View {
                 
                 Section("Test Information") {
                     TextField("Test Procedure", text: $testProcedure)
-                    HStack {
-                        Text("Water Pressure")
-                        Spacer()
-                        TextField("PSI", text: $waterPressure)
-                            .multilineTextAlignment(.trailing)
-                            .frame(width: 80)
-                        Text("PSI")
-                            .foregroundColor(.secondary)
-                    }
+                    TextField("Water (PSI)", text: $waterPressure)
+                        .frame(maxWidth: 120)
                 }
                 
                 Section("Overhead Image") {
@@ -148,6 +141,8 @@ struct EditJobView: View {
                     }
                 }
             }
+            .frame(minWidth: 800, idealWidth: 1000, maxWidth: .infinity, minHeight: 600, idealHeight: 800, maxHeight: .infinity)
+            .formStyle(.grouped)
             .navigationTitle("Edit Job")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

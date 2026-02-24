@@ -30,6 +30,13 @@
         <attribute name="status" optional="NO" attributeType="String" defaultValueString="Ready"/>
         <attribute name="createdAt" optional="NO" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="updatedAt" optional="NO" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="includeEngineeringLetter" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
+        <attribute name="backedUpToArchiveAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="reportDeliveredAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="jobStatus" optional="YES" attributeType="String"/>
+        <attribute name="customHurricaneImagePath" optional="YES" attributeType="String"/>
+        <attribute name="customWeatherText" optional="YES" attributeType="String"/>
+        <attribute name="conclusionComment" optional="YES" attributeType="String"/>
         <relationship name="windows" optional="YES" toMany="YES" deletionRule="Cascade" destinationEntity="Window" inverseName="job" inverseEntity="Window"/>
     </entity>
     <entity name="Window" representedClassName="Window" syncable="YES" codeGenerationType="class">

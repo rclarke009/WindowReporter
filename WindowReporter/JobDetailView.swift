@@ -9,6 +9,132 @@ import SwiftUI
 import CoreData
 import AppKit
 import UniformTypeIdentifiers
+import PhotosUI
+
+/// Get the pixel dimensions of an NSImage for use as canonical coordinate space (matches PDF/cgImage).
+func overheadImagePixelSize(_ image: NSImage) -> CGSize {
+    if let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+        return CGSize(width: cg.width, height: cg.height)
+    }
+    if let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff) {
+        return CGSize(width: bitmap.pixelsWide, height: bitmap.pixelsHigh)
+    }
+    return image.size
+}
+
+/// Convert pan offset from stored (canonical/image pixel) space to display space.
+func overheadOffsetToDisplay(
+    storedX: Double, storedY: Double,
+    imagePixelSize: CGSize,
+    displayImageSize: CGSize
+) -> CGSize {
+    guard imagePixelSize.width > 0, imagePixelSize.height > 0,
+          displayImageSize.width > 0, displayImageSize.height > 0 else {
+        return .zero
+    }
+    return CGSize(
+        width: CGFloat(storedX) * displayImageSize.width / imagePixelSize.width,
+        height: CGFloat(storedY) * displayImageSize.height / imagePixelSize.height
+    )
+}
+
+/// Convert pan offset from display space to stored (canonical/image pixel) space.
+func overheadOffsetToStored(
+    displayOffset: CGSize,
+    imagePixelSize: CGSize,
+    displayImageSize: CGSize
+) -> (x: Double, y: Double) {
+    guard imagePixelSize.width > 0, imagePixelSize.height > 0,
+          displayImageSize.width > 0, displayImageSize.height > 0 else {
+        return (0, 0)
+    }
+    return (
+        Double(displayOffset.width * imagePixelSize.width / displayImageSize.width),
+        Double(displayOffset.height * imagePixelSize.height / displayImageSize.height)
+    )
+}
+
+/// Aspect ratio for overhead image container (width/height). 1.0 = square, matches report.
+let overheadImageContainerAspectRatio: CGFloat = 1.0
+
+/// Canonical container size for overhead transform. Edit Job uses 350×350; Locations tab and LocationMarkerView
+/// use this size for transform calculations so zoom/pan appear consistent across all views.
+let overheadCanonicalContainerSize: CGFloat = 350
+
+private func overheadTransformFrameSize(imageSize: CGSize, scale: CGFloat, rotation: Double, minSize: CGSize) -> CGSize {
+    let scaledW = imageSize.width * scale
+    let scaledH = imageSize.height * scale
+    let rotRad = CGFloat(rotation * .pi / 180)
+    let boxW = scaledW * abs(cos(rotRad)) + scaledH * abs(sin(rotRad))
+    let boxH = scaledW * abs(sin(rotRad)) + scaledH * abs(cos(rotRad))
+    return CGSize(
+        width: max(minSize.width, boxW),
+        height: max(minSize.height, boxH)
+    )
+}
+
+/// Scale factor to fit transformed content within container. Returns 1 if content already fits.
+func overheadFitScale(imageSize: CGSize, scale: CGFloat, rotation: Double, containerSize: CGSize) -> CGFloat {
+    let scaledW = imageSize.width * scale
+    let scaledH = imageSize.height * scale
+    let rotRad = CGFloat(rotation * .pi / 180)
+    let boxW = scaledW * abs(cos(rotRad)) + scaledH * abs(sin(rotRad))
+    let boxH = scaledW * abs(sin(rotRad)) + scaledH * abs(cos(rotRad))
+    guard boxW > 0, boxH > 0, containerSize.width > 0, containerSize.height > 0 else { return 1 }
+    return min(1, containerSize.width / boxW, containerSize.height / boxH)
+}
+
+/// Convert stored pixel position to geometry coordinates for dot display. Matches LocationMarkerView transform.
+/// Use scaledLeft/scaledTop = 0 when image is at top-left (LocationMarkerView); use centered values when image is centered (OverheadImageContentView).
+func overheadDotPositionToGeometry(
+    location: CGPoint,
+    imgSize: CGSize,
+    imageSize: CGSize,
+    scale: CGFloat,
+    offset: CGSize,
+    rotation: Double,
+    frameSize: CGSize,
+    fitScale: CGFloat,
+    containerSize: CGSize,
+    scaleToFill: CGFloat,
+    contentOrigin: CGPoint,
+    scaledLeft: CGFloat? = nil,
+    scaledTop: CGFloat? = nil
+) -> (CGFloat, CGFloat) {
+    guard imgSize.width > 0, imgSize.height > 0, imageSize.width > 0, imageSize.height > 0 else {
+        return (0, 0)
+    }
+    let dotPositionInImage = CGPoint(
+        x: location.x * imageSize.width / imgSize.width,
+        y: location.y * imageSize.height / imgSize.height
+    )
+    let scaledImageW = imageSize.width * scale
+    let scaledImageH = imageSize.height * scale
+    let left = scaledLeft ?? 0
+    let top = scaledTop ?? 0
+    let xBeforeOffset = left + dotPositionInImage.x * scale
+    let yBeforeOffset = top + dotPositionInImage.y * scale
+    let xInFrame = xBeforeOffset + offset.width
+    let yInFrame = yBeforeOffset + offset.height
+    let frameCenterX = frameSize.width / 2
+    let frameCenterY = frameSize.height / 2
+    let relX = xInFrame - frameCenterX
+    let relY = yInFrame - frameCenterY
+    let rotRad = rotation * .pi / 180
+    let rotatedX = frameCenterX + relX * cos(rotRad) - relY * sin(rotRad)
+    let rotatedY = frameCenterY + relX * sin(rotRad) + relY * cos(rotRad)
+    let centerX = containerSize.width / 2
+    let centerY = containerSize.height / 2
+    let scaledFrameW = frameSize.width * fitScale
+    let scaledFrameH = frameSize.height * fitScale
+    let contentLeft = centerX - scaledFrameW / 2
+    let contentTop = centerY - scaledFrameH / 2
+    let containerX = contentLeft + rotatedX * fitScale
+    let containerY = contentTop + rotatedY * fitScale
+    let geometryX = contentOrigin.x + containerX * scaleToFill
+    let geometryY = contentOrigin.y + containerY * scaleToFill
+    return (geometryX, geometryY)
+}
 
 private func formatAddress(job: Job) -> String {
     var components: [String] = []
@@ -30,6 +156,42 @@ private func formatAddress(job: Job) -> String {
         components.append(cityStateZip.joined(separator: " "))
     }
     return components.isEmpty ? "No address" : components.joined(separator: ", ")
+}
+
+/// Forces NSScrollView to use legacy scroller style (always-visible scrollbars) on macOS.
+private struct LegacyScrollbarsModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content.background(_LegacyScrollbarsInjectionView())
+    }
+}
+
+private struct _LegacyScrollbarsInjectionView: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        _ScrollbarConfigView()
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+private final class _ScrollbarConfigView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.configureScrollViews()
+        }
+    }
+    private func configureScrollViews() {
+        guard let contentView = NSApp.keyWindow?.contentView else { return }
+        func findAndConfigure(_ view: NSView) {
+            if let sv = view as? NSScrollView {
+                sv.scrollerStyle = .legacy
+                sv.autohidesScrollers = false
+            }
+            for sub in view.subviews {
+                findAndConfigure(sub)
+            }
+        }
+        findAndConfigure(contentView)
+    }
 }
 
 struct JobDetailView: View {
@@ -101,6 +263,8 @@ struct JobDetailView: View {
             .pickerStyle(SegmentedPickerStyle())
             .padding()
             
+            Divider()
+            
             // Content
             Group {
                 switch selectedTab {
@@ -116,10 +280,16 @@ struct JobDetailView: View {
                     EmptyView()
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(12)
+            .background(Color(NSColor.controlBackgroundColor))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.35), lineWidth: 1))
+            .clipped()
         }
         .navigationTitle("Job Details")
         .sheet(isPresented: $showingEditJob) {
             EditJobView(job: job)
+                .frame(width: (NSScreen.main?.visibleFrame.width ?? 1440) * 0.75, height: 720)
         }
         .onReceive(NotificationCenter.default.publisher(for: .jobDataUpdated)) { _ in
             // Refresh view when job data is updated
@@ -127,8 +297,22 @@ struct JobDetailView: View {
     }
 }
 
+enum JobImageType: Identifiable {
+    case overhead
+    case frontOfHome
+    case gauge
+    var id: Self { self }
+}
+
 struct JobOverviewView: View {
     let job: Job
+    @Environment(\.managedObjectContext) private var viewContext
+    @State private var replaceOptionsImageType: JobImageType?
+    @State private var showingFilePickerForOverhead = false
+    @State private var showingFilePickerForFrontOfHome = false
+    @State private var showingFilePickerForGauge = false
+    @State private var selectedPhotosItem: PhotosPickerItem?
+    @State private var refreshTrigger = UUID()
     
     var body: some View {
         ScrollView {
@@ -158,14 +342,114 @@ struct JobOverviewView: View {
                     }
                 }
                 
+                GroupBox("Job Status") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            JobStatusBadge(status: job.currentStatus)
+                            Spacer()
+                        }
+                        
+                        if let reportDeliveredAt = job.reportDeliveredAt {
+                            InfoRow(label: "Report Delivered", value: DateFormatter.shortDate.string(from: reportDeliveredAt))
+                        }
+                        
+                        if let backedUpAt = job.backedUpToArchiveAt {
+                            InfoRow(label: "Archived", value: DateFormatter.shortDate.string(from: backedUpAt))
+                        }
+                        
+                        Divider()
+                        
+                        VStack(spacing: 8) {
+                            Button(action: {
+                                if job.reportDeliveredAt == nil {
+                                    job.markReportDelivered()
+                                } else {
+                                    job.reportDeliveredAt = nil
+                                    job.updateStatus()
+                                }
+                                do {
+                                    try viewContext.save()
+                                    NotificationCenter.default.post(name: .jobDataUpdated, object: job)
+                                    refreshTrigger = UUID()
+                                } catch {
+                                    print("MYDEBUG → Failed to update report delivered status: \(error.localizedDescription)")
+                                }
+                            }) {
+                                HStack(spacing: 12) {
+                                    if job.reportDeliveredAt != nil {
+                                        Image(systemName: "checkmark.square.fill")
+                                            .foregroundColor(.white)
+                                            .font(.system(size: 20))
+                                    } else {
+                                        Image(systemName: "square")
+                                            .foregroundColor(.white.opacity(0.7))
+                                            .font(.system(size: 20))
+                                    }
+                                    Image(systemName: "paperplane.fill")
+                                    Text("Report Delivered")
+                                    Spacer()
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding()
+                                .background(Color.purple)
+                                .foregroundColor(.white)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            
+                            Button(action: {
+                                if job.backedUpToArchiveAt == nil {
+                                    job.markBackedUpToArchive()
+                                } else {
+                                    job.backedUpToArchiveAt = nil
+                                    job.updateStatus()
+                                }
+                                do {
+                                    try viewContext.save()
+                                    NotificationCenter.default.post(name: .jobDataUpdated, object: job)
+                                    refreshTrigger = UUID()
+                                } catch {
+                                    print("MYDEBUG → Failed to update backed up status: \(error.localizedDescription)")
+                                }
+                            }) {
+                                HStack(spacing: 12) {
+                                    if job.backedUpToArchiveAt != nil {
+                                        Image(systemName: "checkmark.square.fill")
+                                            .foregroundColor(.white)
+                                            .font(.system(size: 20))
+                                    } else {
+                                        Image(systemName: "square")
+                                            .foregroundColor(.white.opacity(0.7))
+                                            .font(.system(size: 20))
+                                    }
+                                    Image(systemName: "archivebox.fill")
+                                    Text("Archived")
+                                    Spacer()
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding()
+                                .background(Color.gray)
+                                .foregroundColor(.white)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                    }
+                    .id(refreshTrigger)
+                }
+                
                 // Overhead Image (Overview Photo)
                 if let imagePath = job.overheadImagePath {
                     GroupBox("Overhead Image / Overview Photo") {
                         if let image = loadOverheadImage(from: imagePath) {
-                            Image(nsImage: image)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(maxHeight: 300)
+                            OverheadImagePreviewView(image: image, job: job, size: 300)
+                                .overlay(
+                                    Color.clear
+                                        .contentShape(Rectangle())
+                                        .onTapGesture(count: 2) {
+                                            replaceOptionsImageType = .overhead
+                                        }
+                                )
                                 .cornerRadius(8)
                         } else {
                             HStack {
@@ -188,6 +472,13 @@ struct JobOverviewView: View {
                                 .aspectRatio(contentMode: .fit)
                                 .frame(maxHeight: 300)
                                 .cornerRadius(8)
+                                .overlay(
+                                    Color.clear
+                                        .contentShape(Rectangle())
+                                        .onTapGesture(count: 2) {
+                                            replaceOptionsImageType = .frontOfHome
+                                        }
+                                )
                         } else {
                             HStack {
                                 Image(systemName: "photo")
@@ -209,6 +500,13 @@ struct JobOverviewView: View {
                                 .aspectRatio(contentMode: .fit)
                                 .frame(maxHeight: 300)
                                 .cornerRadius(8)
+                                .overlay(
+                                    Color.clear
+                                        .contentShape(Rectangle())
+                                        .onTapGesture(count: 2) {
+                                            replaceOptionsImageType = .gauge
+                                        }
+                                )
                         } else {
                             HStack {
                                 Image(systemName: "photo")
@@ -228,7 +526,151 @@ struct JobOverviewView: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
+        }
+        .scrollIndicators(.visible)
+        .scrollIndicatorsFlash(onAppear: true)
+        .modifier(LegacyScrollbarsModifier())
+        .sheet(item: $replaceOptionsImageType) { imageType in
+            ReplaceImageOptionsSheet(
+                selectedPhotosItem: $selectedPhotosItem,
+                onFileSelected: {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        switch imageType {
+                        case .overhead: showingFilePickerForOverhead = true
+                        case .frontOfHome: showingFilePickerForFrontOfHome = true
+                        case .gauge: showingFilePickerForGauge = true
+                        }
+                    }
+                },
+                onCancel: { }
+            )
+        }
+        .fileImporter(
+            isPresented: $showingFilePickerForOverhead,
+            allowedContentTypes: [.jpeg, .png, .heic, .tiff, .bmp, .gif],
+            allowsMultipleSelection: false
+        ) { result in
+            handleFilePickerResult(result, for: .overhead)
+        }
+        .fileImporter(
+            isPresented: $showingFilePickerForFrontOfHome,
+            allowedContentTypes: [.jpeg, .png, .heic, .tiff, .bmp, .gif],
+            allowsMultipleSelection: false
+        ) { result in
+            handleFilePickerResult(result, for: .frontOfHome)
+        }
+        .fileImporter(
+            isPresented: $showingFilePickerForGauge,
+            allowedContentTypes: [.jpeg, .png, .heic, .tiff, .bmp, .gif],
+            allowsMultipleSelection: false
+        ) { result in
+            handleFilePickerResult(result, for: .gauge)
+        }
+        .onChange(of: selectedPhotosItem) { _, newItem in
+            guard let item = newItem else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self),
+                   let nsImage = NSImage(data: data) {
+                    await MainActor.run {
+                        if let imageType = replaceOptionsImageType {
+                            saveImage(nsImage, for: imageType)
+                            replaceOptionsImageType = nil
+                        }
+                        selectedPhotosItem = nil
+                    }
+                }
+            }
+        }
+    }
+    
+    private func handleFilePickerResult(_ result: Result<[URL], Error>, for imageType: JobImageType) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            guard url.startAccessingSecurityScopedResource() else { return }
+            defer { url.stopAccessingSecurityScopedResource() }
+            if let image = NSImage(contentsOf: url) {
+                saveImage(image, for: imageType)
+            }
+        case .failure(let error):
+            print("MYDEBUG →", "File picker error: \(error.localizedDescription)")
+        }
+    }
+    
+    private func saveImage(_ image: NSImage, for imageType: JobImageType) {
+        switch imageType {
+        case .overhead:
+            saveOverheadImage(image, for: job)
+        case .frontOfHome:
+            saveFrontOfHomeImage(image, for: job)
+        case .gauge:
+            saveGaugeImage(image, for: job)
+        }
+        do {
+            try viewContext.save()
+            NotificationCenter.default.post(name: .jobDataUpdated, object: job)
+        } catch {
+            print("MYDEBUG →", "Failed to save: \(error.localizedDescription)")
+        }
+    }
+    
+    private func saveOverheadImage(_ image: NSImage, for job: Job) {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmapImage = NSBitmapImageRep(data: tiffData),
+              let imageData = bitmapImage.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+            return
+        }
+        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let imagesDirectory = documentsDirectory.appendingPathComponent("overhead_images")
+        do {
+            try FileManager.default.createDirectory(at: imagesDirectory, withIntermediateDirectories: true)
+            let fileName = "\(job.jobId ?? UUID().uuidString)_overhead.jpg"
+            let fileURL = imagesDirectory.appendingPathComponent(fileName)
+            try imageData.write(to: fileURL)
+            job.overheadImagePath = fileName
+            job.overheadImageFetchedAt = Date()
+        } catch {
+            print("MYDEBUG →", "Failed to save overhead image: \(error.localizedDescription)")
+        }
+    }
+    
+    private func saveFrontOfHomeImage(_ image: NSImage, for job: Job) {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmapImage = NSBitmapImageRep(data: tiffData),
+              let imageData = bitmapImage.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+            return
+        }
+        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let imagesDirectory = documentsDirectory.appendingPathComponent("front_of_home_images")
+        do {
+            try FileManager.default.createDirectory(at: imagesDirectory, withIntermediateDirectories: true)
+            let fileName = "\(job.jobId ?? UUID().uuidString)_front_of_home.jpg"
+            let fileURL = imagesDirectory.appendingPathComponent(fileName)
+            try imageData.write(to: fileURL)
+            job.frontOfHomeImagePath = fileName
+        } catch {
+            print("MYDEBUG →", "Failed to save front of home image: \(error.localizedDescription)")
+        }
+    }
+    
+    private func saveGaugeImage(_ image: NSImage, for job: Job) {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmapImage = NSBitmapImageRep(data: tiffData),
+              let imageData = bitmapImage.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+            return
+        }
+        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let imagesDirectory = documentsDirectory.appendingPathComponent("gauge_images")
+        do {
+            try FileManager.default.createDirectory(at: imagesDirectory, withIntermediateDirectories: true)
+            let fileName = "\(job.jobId ?? UUID().uuidString)_gauge.jpg"
+            let fileURL = imagesDirectory.appendingPathComponent(fileName)
+            try imageData.write(to: fileURL)
+            job.gaugeImagePath = fileName
+        } catch {
+            print("MYDEBUG →", "Failed to save gauge image: \(error.localizedDescription)")
         }
     }
     
@@ -339,8 +781,12 @@ struct WindowsListView: View {
                     .padding()
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
         }
+        .scrollIndicators(.visible)
+        .scrollIndicatorsFlash(onAppear: true)
+        .modifier(LegacyScrollbarsModifier())
     }
 }
 
@@ -407,10 +853,214 @@ struct WindowRowView: View {
     }
 }
 
+/// Read-only overhead image with transform, for overview display.
+private struct OverheadImagePreviewView: View {
+    let image: NSImage
+    let job: Job
+    let size: CGFloat
+    @State private var imageSize: CGSize = .zero
+    
+    private var scale: CGFloat {
+        max(1.0, CGFloat(1.0))
+    }
+    private var offset: CGSize {
+        let imgSize = overheadImagePixelSize(image)
+        return overheadOffsetToDisplay(
+            storedX: 0, storedY: 0,
+            imagePixelSize: imgSize,
+            displayImageSize: imageSize
+        )
+    }
+    private var rotation: Double { 0 }
+    
+    var body: some View {
+        let containerSize = CGSize(width: size, height: size)
+        let fs = overheadTransformFrameSize(imageSize: imageSize, scale: scale, rotation: rotation, minSize: containerSize)
+        let fitScale = overheadFitScale(imageSize: imageSize, scale: scale, rotation: rotation, containerSize: containerSize)
+        ZStack(alignment: .topLeading) {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .background(
+                    GeometryReader { imageGeometry in
+                        Color.clear
+                            .onAppear {
+                                let frameSize = imageGeometry.size
+                                let imgSize = CGSize(width: image.size.width, height: image.size.height)
+                                let imageAspectRatio = imgSize.width / imgSize.height
+                                if imageAspectRatio > (frameSize.width / frameSize.height) {
+                                    imageSize = CGSize(width: frameSize.width, height: frameSize.width / imageAspectRatio)
+                                } else {
+                                    imageSize = CGSize(width: frameSize.height * imageAspectRatio, height: frameSize.height)
+                                }
+                            }
+                    }
+                )
+        }
+        .scaleEffect(scale)
+        .offset(offset)
+        .rotationEffect(.degrees(rotation))
+        .frame(width: fs.width, height: fs.height)
+        .scaleEffect(fitScale)
+        .frame(width: size, height: size)
+        .clipped()
+    }
+}
+
+private struct OverheadImageContentView: View {
+    let image: NSImage
+    let geometry: GeometryProxy
+    let job: Job
+    let windows: [Window]
+    @Binding var showingReplaceOptions: Bool
+    var minSizeOverride: CGSize? = nil
+    
+    private var effectiveMinSize: CGSize {
+        minSizeOverride ?? geometry.size
+    }
+    /// Use canonical size for transform so zoom/pan matches Edit Job and LocationMarkerView.
+    private var transformContainerSize: CGSize {
+        CGSize(width: overheadCanonicalContainerSize, height: overheadCanonicalContainerSize)
+    }
+    private var scale: CGFloat {
+        max(1.0, CGFloat(1.0))
+    }
+    private var offset: CGSize {
+        let imgSize = overheadImagePixelSize(image)
+        return overheadOffsetToDisplay(
+            storedX: 0, storedY: 0,
+            imagePixelSize: imgSize,
+            displayImageSize: imageFittedToFrameSize
+        )
+    }
+    private var rotation: Double { 0 }
+    private var frameSize: CGSize {
+        overheadTransformFrameSize(
+            imageSize: displayImageSize,
+            scale: scale,
+            rotation: rotation,
+            minSize: transformContainerSize
+        )
+    }
+    
+    var body: some View {
+        let fs = frameSize
+        let fitScale = overheadFitScale(imageSize: displayImageSize, scale: scale, rotation: rotation, containerSize: transformContainerSize)
+        let scaleToFill = min(effectiveMinSize.width, effectiveMinSize.height) / overheadCanonicalContainerSize
+        let contentSide = overheadCanonicalContainerSize * scaleToFill
+        let contentOrigin = CGPoint(
+            x: (effectiveMinSize.width - contentSide) / 2,
+            y: (effectiveMinSize.height - contentSide) / 2
+        )
+        return ZStack(alignment: .topLeading) {
+            imageOnly
+                .scaleEffect(scale)
+                .offset(offset)
+                .rotationEffect(.degrees(rotation))
+        }
+        .frame(width: fs.width, height: fs.height)
+        .scaleEffect(fitScale)
+        .frame(width: overheadCanonicalContainerSize, height: overheadCanonicalContainerSize)
+        .scaleEffect(scaleToFill)
+        .frame(width: effectiveMinSize.width, height: effectiveMinSize.height)
+        .contentShape(Rectangle())
+        .clipped()
+        .overlay {
+            dotsOverlay(
+                contentOrigin: contentOrigin,
+                scaleToFill: scaleToFill,
+                fitScale: fitScale
+            )
+        }
+        .overlay(alignment: .topTrailing) {
+            Button(action: { showingReplaceOptions = true }) {
+                Image(systemName: "photo.badge.plus")
+                    .font(.system(size: 14))
+                    .foregroundColor(.secondary)
+                    .padding(6)
+                    .background(Color(NSColor.controlBackgroundColor).opacity(0.9))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(8)
+        }
+    }
+    
+    /// Display size of the image when fitted to transform container (canonical). Matches Edit Job for consistent zoom.
+    private var displayImageSize: CGSize {
+        let pixelSize = overheadImagePixelSize(image)
+        let imageAspectRatio = pixelSize.width / max(1, pixelSize.height)
+        let containerAspectRatio = transformContainerSize.width / max(1, transformContainerSize.height)
+        if imageAspectRatio > containerAspectRatio {
+            return CGSize(width: transformContainerSize.width, height: transformContainerSize.width / imageAspectRatio)
+        } else {
+            return CGSize(width: transformContainerSize.height * imageAspectRatio, height: transformContainerSize.height)
+        }
+    }
+    
+    /// Image size when fitted to frameSize. Used for dot positioning to avoid GeometryReader layout timing issues.
+    private var imageFittedToFrameSize: CGSize {
+        let pixelSize = overheadImagePixelSize(image)
+        let imageAspectRatio = pixelSize.width / max(1, pixelSize.height)
+        let fs = frameSize
+        let containerAspectRatio = fs.width / max(1, fs.height)
+        if imageAspectRatio > containerAspectRatio {
+            return CGSize(width: fs.width, height: fs.width / imageAspectRatio)
+        } else {
+            return CGSize(width: fs.height * imageAspectRatio, height: fs.height)
+        }
+    }
+    
+    private var imageOnly: some View {
+        Image(nsImage: image)
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+    }
+    
+    /// Dots positioned in geometry coordinates using same transform as LocationMarkerView.
+    /// Uses scaledLeft=0, scaledTop=0 to match LocationMarkerView's top-leading image layout.
+    @ViewBuilder
+    private func dotsOverlay(contentOrigin: CGPoint, scaleToFill: CGFloat, fitScale: CGFloat) -> some View {
+        let windowsWithPositions = windows.filter { $0.xPosition > 0 && $0.yPosition > 0 }
+        let imgSize = overheadImagePixelSize(image)
+        let fittedSize = imageFittedToFrameSize
+        let fs = frameSize
+        let containerSize = transformContainerSize
+        if imgSize.width > 0, imgSize.height > 0, fittedSize.width > 0, fittedSize.height > 0 {
+            ZStack(alignment: .topLeading) {
+                ForEach(windowsWithPositions, id: \.objectID) { window in
+                    let location = CGPoint(x: window.xPosition, y: window.yPosition)
+                    let (geometryX, geometryY) = overheadDotPositionToGeometry(
+                        location: location,
+                        imgSize: imgSize,
+                        imageSize: fittedSize,
+                        scale: scale,
+                        offset: offset,
+                        rotation: rotation,
+                        frameSize: fs,
+                        fitScale: fitScale,
+                        containerSize: containerSize,
+                        scaleToFill: scaleToFill,
+                        contentOrigin: contentOrigin
+                    )
+                    OverheadCanvasWindowDotView(window: window)
+                        .position(x: geometryX, y: geometryY)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(width: effectiveMinSize.width, height: effectiveMinSize.height)
+        }
+    }
+}
+
 struct OverheadCanvasView: View {
     let job: Job
+    @Environment(\.managedObjectContext) private var viewContext
     @State private var image: NSImage?
-    @State private var imageSize: CGSize = .zero
+    @State private var showingReplaceOptions = false
+    @State private var showingFilePicker = false
+    @State private var selectedPhotosItem: PhotosPickerItem?
+    @State private var locationsRefreshID = UUID()
     
     private var windows: [Window] {
         guard let windowsSet = job.windows else { return [] }
@@ -419,55 +1069,23 @@ struct OverheadCanvasView: View {
     
     var body: some View {
         GeometryReader { geometry in
+            let side = min(geometry.size.width, geometry.size.height)
+            let squareMinSize = CGSize(width: side, height: side)
             ZStack {
-                Color(.controlBackgroundColor)
+                Color(NSColor.controlBackgroundColor)
                     .ignoresSafeArea()
                 
                 if let image = image {
-                    ScrollView([.horizontal, .vertical]) {
-                        ZStack {
-                            Image(nsImage: image)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .background(
-                                    GeometryReader { imageGeometry in
-                                        Color.clear
-                                            .onAppear {
-                                                // Calculate displayed image size based on aspect ratio
-                                                let frameSize = imageGeometry.size
-                                                let imageAspectRatio = image.size.width / image.size.height
-                                                let frameAspectRatio = frameSize.width / frameSize.height
-                                                
-                                                if imageAspectRatio > frameAspectRatio {
-                                                    // Image is wider - letterboxed
-                                                    let displayedHeight = frameSize.width / imageAspectRatio
-                                                    imageSize = CGSize(width: frameSize.width, height: displayedHeight)
-                                                } else {
-                                                    // Image is taller - pillarboxed
-                                                    let displayedWidth = frameSize.height * imageAspectRatio
-                                                    imageSize = CGSize(width: displayedWidth, height: frameSize.height)
-                                                }
-                                            }
-                                    }
-                                )
-                            
-                            // Window dots overlay
-                            if imageSize.width > 0 && imageSize.height > 0 {
-                                ForEach(windows, id: \.objectID) { window in
-                                    WindowDotView(
-                                        window: window,
-                                        imageSize: imageSize,
-                                        originalImageSize: image.size,
-                                        viewSize: geometry.size
-                                    )
-                                }
-                            }
-                        }
-                        .frame(
-                            width: max(geometry.size.width, imageSize.width),
-                            height: max(geometry.size.height, imageSize.height)
-                        )
-                    }
+                    OverheadImageContentView(
+                        image: image,
+                        geometry: geometry,
+                        job: job,
+                        windows: windows,
+                        showingReplaceOptions: $showingReplaceOptions,
+                        minSizeOverride: squareMinSize
+                    )
+                    .id(locationsRefreshID)
+                    .frame(width: side, height: side)
                 } else if let imagePath = job.overheadImagePath {
                     VStack(spacing: 16) {
                         ProgressView()
@@ -495,9 +1113,89 @@ struct OverheadCanvasView: View {
         .padding()
         .onAppear {
             loadImage()
+            // Refresh job and windows when Locations tab appears so placed dots show
+            // (user may have placed dots while on Windows tab, so onReceive never ran)
+            viewContext.refresh(job, mergeChanges: true)
+            for w in windows {
+                viewContext.refresh(w, mergeChanges: true)
+            }
+            let withPositions = windows.filter { $0.xPosition > 0 && $0.yPosition > 0 }
+            print("MYDEBUG → OverheadCanvasView.onAppear: windows=\(windows.count), withPositions=\(withPositions.count), positions=\(withPositions.map { "\($0.windowNumber ?? "?"):(\($0.xPosition),\($0.yPosition))" })")
+            locationsRefreshID = UUID()
         }
         .onChange(of: job.overheadImagePath) { _, _ in
             loadImage()
+        }
+        .sheet(isPresented: $showingReplaceOptions) {
+            ReplaceImageOptionsSheet(
+                selectedPhotosItem: $selectedPhotosItem,
+                onFileSelected: {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        showingFilePicker = true
+                    }
+                },
+                onCancel: { }
+            )
+        }
+        .fileImporter(
+            isPresented: $showingFilePicker,
+            allowedContentTypes: [.jpeg, .png, .heic, .tiff, .bmp, .gif],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                guard url.startAccessingSecurityScopedResource() else { return }
+                defer { url.stopAccessingSecurityScopedResource() }
+                if let newImage = NSImage(contentsOf: url) {
+                    saveOverheadImage(newImage, for: job)
+                }
+            case .failure(let error):
+                print("MYDEBUG →", "File picker error: \(error.localizedDescription)")
+            }
+        }
+        .onChange(of: selectedPhotosItem) { _, newItem in
+            guard let item = newItem else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self),
+                   let nsImage = NSImage(data: data) {
+                    await MainActor.run {
+                        saveOverheadImage(nsImage, for: job)
+                        selectedPhotosItem = nil
+                    }
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .jobDataUpdated)) { notification in
+            if let postedJob = notification.object as? Job, postedJob.objectID == job.objectID {
+                viewContext.refresh(job, mergeChanges: true)
+                for w in windows {
+                    viewContext.refresh(w, mergeChanges: true)
+                }
+                locationsRefreshID = UUID()
+            }
+        }
+    }
+    
+    private func saveOverheadImage(_ image: NSImage, for job: Job) {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmapImage = NSBitmapImageRep(data: tiffData),
+              let imageData = bitmapImage.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+            return
+        }
+        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let imagesDirectory = documentsDirectory.appendingPathComponent("overhead_images")
+        do {
+            try FileManager.default.createDirectory(at: imagesDirectory, withIntermediateDirectories: true)
+            let fileName = "\(job.jobId ?? UUID().uuidString)_overhead.jpg"
+            let fileURL = imagesDirectory.appendingPathComponent(fileName)
+            try imageData.write(to: fileURL)
+            job.overheadImagePath = fileName
+            job.overheadImageFetchedAt = Date()
+            try viewContext.save()
+            NotificationCenter.default.post(name: .jobDataUpdated, object: job)
+        } catch {
+            print("MYDEBUG →", "Failed to save overhead image: \(error.localizedDescription)")
         }
     }
     
@@ -532,6 +1230,49 @@ struct OverheadCanvasView: View {
         } else {
             print("❌ Image file does not exist at path")
         }
+    }
+}
+
+/// Dot view for OverheadCanvasView - parent positions via .position()
+struct OverheadCanvasWindowDotView: View {
+    let window: Window
+    
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(dotColor)
+                .frame(width: 20, height: 20)
+                .overlay(
+                    Circle()
+                        .stroke(Color.white, lineWidth: 2)
+                )
+                .frame(width: 44, height: 44)
+            
+            if let windowNumber = window.windowNumber {
+                Text(OverheadCanvasWindowDotView.extractNumberFromSpecimenName(windowNumber))
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(window.isInaccessible ? .black : .white)
+            }
+        }
+    }
+    
+    private var dotColor: Color {
+        if window.isInaccessible {
+            return .gray
+        } else if window.testResult == "Pass" {
+            return .green
+        } else if window.testResult == "Fail" {
+            return .red
+        } else {
+            return .blue
+        }
+    }
+    
+    private static func extractNumberFromSpecimenName(_ name: String) -> String {
+        if let numberRange = name.range(of: #"\d+"#, options: .regularExpression) {
+            return String(name[numberRange])
+        }
+        return name
     }
 }
 
@@ -626,7 +1367,7 @@ enum RecipientType: String, CaseIterable {
 }
 
 enum ReportSelectionMode: String, CaseIterable {
-    case generateNew = "Generate New Report"
+    case generateNew = "Generate Report"
     case selectExisting = "Select Existing Report"
 }
 
@@ -641,6 +1382,9 @@ struct ExportView: View {
     @State private var isExportingFullPackage = false
     @State private var fullPackageFileURL: URL?
     @State private var fullPackageError: String?
+    
+    @State private var showingCustomizationSheet = false
+    @State private var includeEngineeringLetter = false
     
     // Email draft state
     @State private var recipientType: RecipientType = .mrLevy
@@ -829,6 +1573,24 @@ struct ExportView: View {
                         .background(Color(.controlBackgroundColor))
                         .cornerRadius(8)
                         
+                        // Customize Report
+                        Button(action: {
+                            showingCustomizationSheet = true
+                        }) {
+                            HStack {
+                                Image(systemName: "slider.horizontal.3")
+                                Text("Customize Report")
+                                Spacer()
+                                if hasCustomHurricaneImage() || hasCustomWeatherText() || hasConclusionComment() || includeEngineeringLetter {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                        }
+                        .buttonStyle(.bordered)
+                        
                         // Email Draft
                         VStack(alignment: .leading, spacing: 8) {
                             HStack {
@@ -955,11 +1717,46 @@ struct ExportView: View {
                     .padding()
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
         }
+        .scrollIndicators(.visible)
+        .scrollIndicatorsFlash(onAppear: true)
+        .modifier(LegacyScrollbarsModifier())
         .onAppear {
             updateEmailAddress(for: recipientType)
+            includeEngineeringLetter = job.includeEngineeringLetter ?? false
         }
+        .sheet(isPresented: $showingCustomizationSheet) {
+            ReportCustomizationSheetView(
+                job: job,
+                includeEngineeringLetter: $includeEngineeringLetter,
+                onSave: {
+                    showingCustomizationSheet = false
+                },
+                onCancel: {
+                    showingCustomizationSheet = false
+                }
+            )
+            .frame(width: (NSScreen.main?.visibleFrame.width ?? 1440) * 0.75, height: 720)
+        }
+    }
+    
+    private func hasCustomHurricaneImage() -> Bool {
+        guard let imagePath = job.customHurricaneImagePath else { return false }
+        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let imageURL = documentsDirectory.appendingPathComponent("custom_hurricane_images").appendingPathComponent(imagePath)
+        return FileManager.default.fileExists(atPath: imageURL.path)
+    }
+    
+    private func hasCustomWeatherText() -> Bool {
+        guard let text = job.customWeatherText else { return false }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    private func hasConclusionComment() -> Bool {
+        guard let comment = job.conclusionComment else { return false }
+        return !comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     
     private func exportDocxReport() {
@@ -991,16 +1788,18 @@ struct ExportView: View {
         guard !isExportingPdf else { return }
         isExportingPdf = true
         pdfError = nil
-        
+
+        // Refresh job from store so we have latest persisted value; use job as source of truth, fall back to @State
+        job.managedObjectContext?.refresh(job, mergeChanges: true)
+        let includeEngLetter = job.includeEngineeringLetter ?? includeEngineeringLetter
+
         Task {
             do {
                 let package = FieldResultsPackage(job: job, exportDirectory: URL(fileURLWithPath: ""))
-                let pdfURL = try await package.exportPDFReport()
+                let pdfURL = try await package.exportPDFReport(includeEngineeringLetter: includeEngLetter)
                 await MainActor.run {
                     pdfFileURL = pdfURL
                     isExportingPdf = false
-                    // Open the file location
-                    NSWorkspace.shared.activateFileViewerSelecting([pdfURL])
                 }
             } catch {
                 print("❌ PDF export failed: \(error.localizedDescription)")
@@ -1101,8 +1900,10 @@ struct ExportView: View {
                 } else {
                     // Generate new PDF report
                     print("MYDEBUG →", "Generating PDF report for email draft...")
+                    job.managedObjectContext?.refresh(job, mergeChanges: true)
+                    let includeEngLetter = job.includeEngineeringLetter ?? includeEngineeringLetter
                     let package = FieldResultsPackage(job: job, exportDirectory: URL(fileURLWithPath: ""))
-                    pdfURL = try await package.exportPDFReport()
+                    pdfURL = try await package.exportPDFReport(includeEngineeringLetter: includeEngLetter)
                     print("MYDEBUG →", "PDF generated at: \(pdfURL.path)")
                 }
                 
@@ -1139,8 +1940,6 @@ struct ExportView: View {
     }
     
     private func createEmailDraftWithPDF(pdfURL: URL) {
-        let logPath = "/Users/rebeccaclarke/Documents/Public/JW Roofing/VenShares/Projects/WindowTestApp/WindowTest2/.cursor/debug.log"
-        
         guard let emailService = NSSharingService(named: .composeEmail) else {
             emailDraftError = "Unable to create email service. Please ensure Mail.app is configured."
             return
@@ -1161,50 +1960,17 @@ struct ExportView: View {
         // Get signature image URL for attachment
         let signatureImageURL = loadSignatureImageURL()
         
-        // #region agent log
-        if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "JobDetailView.swift:1160", "message": "Signature image URL loaded", "data": ["signatureImageURL": signatureImageURL?.path ?? "nil", "signatureImageName": signatureImageURL?.lastPathComponent ?? "nil"], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-            FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-            if let handle = FileHandle(forWritingAtPath: logPath) {
-                handle.seekToEndOfFile()
-                handle.write((logStr + "\n").data(using: .utf8)!)
-                handle.closeFile()
-            }
-        }
-        // #endregion
-        
         // Create email body - try using NSAttributedString with HTML for better image support
         let emailBody: Any
         var usingBase64 = false
         var imageDataSize: Int = 0
         
         if let signatureURL = signatureImageURL {
-            // #region agent log
-            if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "A,B", "location": "JobDetailView.swift:1176", "message": "Signature URL found", "data": ["signatureURL": signatureURL.path], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-                FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-                if let handle = FileHandle(forWritingAtPath: logPath) {
-                    handle.seekToEndOfFile()
-                    handle.write((logStr + "\n").data(using: .utf8)!)
-                    handle.closeFile()
-                }
-            }
-            // #endregion
-            
             // Load image data and embed as base64 (more reliable than CID for Mail.app)
             // Resize image to reasonable size for email (max 300px width)
             if let nsImage = NSImage(contentsOf: signatureURL) {
                 let originalSize = nsImage.size
                 imageDataSize = (try? Data(contentsOf: signatureURL))?.count ?? 0
-                
-                // #region agent log
-                if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "C,D", "location": "JobDetailView.swift:1195", "message": "Image loaded", "data": ["imageDataSize": imageDataSize, "imageWidth": originalSize.width, "imageHeight": originalSize.height], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-                    FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-                    if let handle = FileHandle(forWritingAtPath: logPath) {
-                        handle.seekToEndOfFile()
-                        handle.write((logStr + "\n").data(using: .utf8)!)
-                        handle.closeFile()
-                    }
-                }
-                // #endregion
                 
                 // Resize image to max 150px width for email
                 let maxWidth: CGFloat = 150
@@ -1258,20 +2024,6 @@ struct ExportView: View {
             emailBody = formatEmailBody(recipientName: recipientName, address: address, signatureImageName: nil)
         }
         
-        // #region agent log
-        let emailBodyType = type(of: emailBody)
-        let emailBodyString = emailBody as? String ?? "not a string"
-        let imgTagCount = emailBodyString.components(separatedBy: "<img").count - 1
-        if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "JobDetailView.swift:1195", "message": "Email body created", "data": ["emailBodyType": String(describing: emailBodyType), "usingBase64": usingBase64, "imgTagCount": imgTagCount, "emailBodyLength": emailBodyString.count], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-            FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-            if let handle = FileHandle(forWritingAtPath: logPath) {
-                handle.seekToEndOfFile()
-                handle.write((logStr + "\n").data(using: .utf8)!)
-                handle.closeFile()
-            }
-        }
-        // #endregion
-        
         // Set email properties
         emailService.recipients = [recipientEmail]
         emailService.subject = "Window Test Report - \(address)"
@@ -1282,41 +2034,10 @@ struct ExportView: View {
         
         // Only attach image separately if using CID reference (NOT base64)
         let willAttachImage = signatureImageURL != nil && !usingBase64
-        // #region agent log
-        if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "JobDetailView.swift:1205", "message": "Items preparation", "data": ["willAttachImage": willAttachImage, "itemsCount": items.count, "usingBase64": usingBase64, "signatureImageURL": signatureImageURL != nil], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-            FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-            if let handle = FileHandle(forWritingAtPath: logPath) {
-                handle.seekToEndOfFile()
-                handle.write((logStr + "\n").data(using: .utf8)!)
-                handle.closeFile()
-            }
-        }
-        // #endregion
         
         if willAttachImage {
             items.append(signatureImageURL!)
-            // #region agent log
-            if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "JobDetailView.swift:1260", "message": "Image attached separately", "data": ["itemsCountAfterAppend": items.count], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-                FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-                if let handle = FileHandle(forWritingAtPath: logPath) {
-                    handle.seekToEndOfFile()
-                    handle.write((logStr + "\n").data(using: .utf8)!)
-                    handle.closeFile()
-                }
-            }
-            // #endregion
         }
-        
-        // #region agent log
-        if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "JobDetailView.swift:1215", "message": "Final items count", "data": ["finalItemsCount": items.count], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-            FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-            if let handle = FileHandle(forWritingAtPath: logPath) {
-                handle.seekToEndOfFile()
-                handle.write((logStr + "\n").data(using: .utf8)!)
-                handle.closeFile()
-            }
-        }
-        // #endregion
         
         // Perform the service with body and attachments
         emailService.perform(withItems: items)
@@ -1382,8 +2103,6 @@ struct ExportView: View {
     }
     
     private func loadSignatureImageURL() -> URL? {
-        let logPath = "/Users/rebeccaclarke/Documents/Public/JW Roofing/VenShares/Projects/WindowTestApp/WindowTest2/.cursor/debug.log"
-        
         // Detect current appearance
         let isDarkMode = NSApp.effectiveAppearance.name == .darkAqua || 
                         NSApp.effectiveAppearance.name == .vibrantDark ||
@@ -1392,46 +2111,12 @@ struct ExportView: View {
         // Get image path based on appearance
         let imageName = isDarkMode ? "TrueLogoDark.png" : "TrueLogoEmailLight.jpg"
         
-        // #region agent log
-        if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "JobDetailView.swift:1216", "message": "loadSignatureImageURL entry", "data": ["isDarkMode": isDarkMode, "imageName": imageName], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-            FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-            if let handle = FileHandle(forWritingAtPath: logPath) {
-                handle.seekToEndOfFile()
-                handle.write((logStr + "\n").data(using: .utf8)!)
-                handle.closeFile()
-            }
-        }
-        // #endregion
-        
         // Try to load from bundle/images directory
         let resourceName = imageName.replacingOccurrences(of: ".png", with: "").replacingOccurrences(of: ".jpg", with: "")
         let resourceType = imageName.hasSuffix(".png") ? "png" : "jpg"
         
-        // #region agent log
-        let bundleResourcePath = Bundle.main.resourcePath ?? "nil"
-        if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "JobDetailView.swift:1235", "message": "Bundle check", "data": ["bundleResourcePath": bundleResourcePath, "resourceName": resourceName, "resourceType": resourceType], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-            FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-            if let handle = FileHandle(forWritingAtPath: logPath) {
-                handle.seekToEndOfFile()
-                handle.write((logStr + "\n").data(using: .utf8)!)
-                handle.closeFile()
-            }
-        }
-        // #endregion
-        
         if let imagePath = Bundle.main.path(forResource: resourceName, ofType: resourceType, inDirectory: "images") {
-            let fileExists = FileManager.default.fileExists(atPath: imagePath)
-            // #region agent log
-            if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "JobDetailView.swift:1242", "message": "Bundle path result", "data": ["imagePath": imagePath, "fileExists": fileExists], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-                FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-                if let handle = FileHandle(forWritingAtPath: logPath) {
-                    handle.seekToEndOfFile()
-                    handle.write((logStr + "\n").data(using: .utf8)!)
-                    handle.closeFile()
-                }
-            }
-            // #endregion
-            if fileExists {
+            if FileManager.default.fileExists(atPath: imagePath) {
                 print("MYDEBUG →", "Found signature image in bundle: \(imagePath)")
                 return URL(fileURLWithPath: imagePath)
             }
@@ -1441,19 +2126,7 @@ struct ExportView: View {
         let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let imageURL = documentsDirectory.appendingPathComponent("images").appendingPathComponent(imageName)
         
-        let docsExists = FileManager.default.fileExists(atPath: imageURL.path)
-        // #region agent log
-        if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "JobDetailView.swift:1255", "message": "Documents check", "data": ["imageURL": imageURL.path, "fileExists": docsExists], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-            FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-            if let handle = FileHandle(forWritingAtPath: logPath) {
-                handle.seekToEndOfFile()
-                handle.write((logStr + "\n").data(using: .utf8)!)
-                handle.closeFile()
-            }
-        }
-        // #endregion
-        
-        if docsExists {
+        if FileManager.default.fileExists(atPath: imageURL.path) {
             print("MYDEBUG →", "Found signature image in documents: \(imageURL.path)")
             return imageURL
         }
@@ -1490,18 +2163,7 @@ struct ExportView: View {
         
         // Try app bundle resources
         if let bundleImageURL = Bundle.main.url(forResource: resourceName, withExtension: resourceType, subdirectory: "images") {
-            let bundleURLExists = FileManager.default.fileExists(atPath: bundleImageURL.path)
-            // #region agent log
-            if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "D", "location": "JobDetailView.swift:1268", "message": "Bundle URL check", "data": ["bundleImageURL": bundleImageURL.path, "fileExists": bundleURLExists], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-                FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-                if let handle = FileHandle(forWritingAtPath: logPath) {
-                    handle.seekToEndOfFile()
-                    handle.write((logStr + "\n").data(using: .utf8)!)
-                    handle.closeFile()
-                }
-            }
-            // #endregion
-            if bundleURLExists {
+            if FileManager.default.fileExists(atPath: bundleImageURL.path) {
                 print("MYDEBUG →", "Found signature image via bundle URL: \(bundleImageURL.path)")
                 return bundleImageURL
             }
@@ -1511,18 +2173,7 @@ struct ExportView: View {
         if let bundlePath = Bundle.main.resourcePath {
             let imagesPath = (bundlePath as NSString).appendingPathComponent("images")
             let fullImagePath = (imagesPath as NSString).appendingPathComponent(imageName)
-            let resourcePathExists = FileManager.default.fileExists(atPath: fullImagePath)
-            // #region agent log
-            if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "JobDetailView.swift:1280", "message": "Resource path check", "data": ["bundlePath": bundlePath, "imagesPath": imagesPath, "fullImagePath": fullImagePath, "fileExists": resourcePathExists], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-                FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-                if let handle = FileHandle(forWritingAtPath: logPath) {
-                    handle.seekToEndOfFile()
-                    handle.write((logStr + "\n").data(using: .utf8)!)
-                    handle.closeFile()
-                }
-            }
-            // #endregion
-            if resourcePathExists {
+            if FileManager.default.fileExists(atPath: fullImagePath) {
                 print("MYDEBUG →", "Found signature image in resource path: \(fullImagePath)")
                 return URL(fileURLWithPath: fullImagePath)
             }
@@ -1531,30 +2182,7 @@ struct ExportView: View {
         // Final fallback: Try to use source images directory directly (skip copy due to sandbox restrictions)
         let sourceImagesPath = "/Users/rebeccaclarke/Documents/Public/JW Roofing/VenShares/Projects/WindowTestApp/WindowTest2/WindowReporter/WindowReporter/images/\(imageName)"
         
-        // #region agent log
-        let sourceExists = FileManager.default.fileExists(atPath: sourceImagesPath)
-        let sourceReadable = FileManager.default.isReadableFile(atPath: sourceImagesPath)
-        if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "F", "location": "JobDetailView.swift:1295", "message": "Source file check", "data": ["sourceImagesPath": sourceImagesPath, "sourceExists": sourceExists, "sourceReadable": sourceReadable, "imageName": imageName], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-            FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-            if let handle = FileHandle(forWritingAtPath: logPath) {
-                handle.seekToEndOfFile()
-                handle.write((logStr + "\n").data(using: .utf8)!)
-                handle.closeFile()
-            }
-        }
-        // #endregion
-        
-        if sourceExists && sourceReadable {
-            // #region agent log
-            if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "F", "location": "JobDetailView.swift:1305", "message": "Using source file", "data": ["sourceImagesPath": sourceImagesPath], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-                FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-                if let handle = FileHandle(forWritingAtPath: logPath) {
-                    handle.seekToEndOfFile()
-                    handle.write((logStr + "\n").data(using: .utf8)!)
-                    handle.closeFile()
-                }
-            }
-            // #endregion
+        if FileManager.default.fileExists(atPath: sourceImagesPath) && FileManager.default.isReadableFile(atPath: sourceImagesPath) {
             // Try to copy to Documents, but if it fails, use source directly
             let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
             let documentsImagesDir = docsDir.appendingPathComponent("images")
@@ -1587,18 +2215,6 @@ struct ExportView: View {
     }
     
     private func loadSignatureImageData() -> (Data, String) {
-        let logPath = "/Users/rebeccaclarke/Documents/Public/JW Roofing/VenShares/Projects/WindowTestApp/WindowTest2/.cursor/debug.log"
-        // #region agent log
-        if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "JobDetailView.swift:1198", "message": "loadSignatureImageData entry", "data": ["timestamp": Date().timeIntervalSince1970], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-            FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-            if let handle = FileHandle(forWritingAtPath: logPath) {
-                handle.seekToEndOfFile()
-                handle.write((logStr + "\n").data(using: .utf8)!)
-                handle.closeFile()
-            }
-        }
-        // #endregion
-        
         // Detect current appearance
         let isDarkMode = NSApp.effectiveAppearance.name == .darkAqua || 
                         NSApp.effectiveAppearance.name == .vibrantDark ||
@@ -1608,45 +2224,11 @@ struct ExportView: View {
         let imageName = isDarkMode ? "TrueLogoDark.png" : "TrueLogoEmailLight.jpg"
         let mimeType = imageName.hasSuffix(".png") ? "image/png" : "image/jpeg"
         
-        // #region agent log
-        if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "JobDetailView.swift:1205", "message": "Image selection", "data": ["isDarkMode": isDarkMode, "imageName": imageName, "mimeType": mimeType], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-            FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-            if let handle = FileHandle(forWritingAtPath: logPath) {
-                handle.seekToEndOfFile()
-                handle.write((logStr + "\n").data(using: .utf8)!)
-                handle.closeFile()
-            }
-        }
-        // #endregion
-        
         // Try to load from bundle/images directory
         let resourceName = imageName.replacingOccurrences(of: ".png", with: "").replacingOccurrences(of: ".jpg", with: "")
         let resourceType = imageName.hasSuffix(".png") ? "png" : "jpg"
         
-        // #region agent log
-        let bundleResourcePath = Bundle.main.resourcePath ?? "nil"
-        if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "JobDetailView.swift:1215", "message": "Bundle paths check", "data": ["bundleResourcePath": bundleResourcePath, "resourceName": resourceName, "resourceType": resourceType, "inDirectory": "images"], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-            FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-            if let handle = FileHandle(forWritingAtPath: logPath) {
-                handle.seekToEndOfFile()
-                handle.write((logStr + "\n").data(using: .utf8)!)
-                handle.closeFile()
-            }
-        }
-        // #endregion
-        
         if let imagePath = Bundle.main.path(forResource: resourceName, ofType: resourceType, inDirectory: "images") {
-            // #region agent log
-            let fileExists = FileManager.default.fileExists(atPath: imagePath)
-            if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "JobDetailView.swift:1220", "message": "Bundle path found", "data": ["imagePath": imagePath, "fileExists": fileExists], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-                FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-                if let handle = FileHandle(forWritingAtPath: logPath) {
-                    handle.seekToEndOfFile()
-                    handle.write((logStr + "\n").data(using: .utf8)!)
-                    handle.closeFile()
-                }
-            }
-            // #endregion
             if let imageData = FileManager.default.contents(atPath: imagePath) {
                 print("MYDEBUG →", "Loaded signature image from bundle: \(imagePath)")
                 return (imageData, mimeType)
@@ -1657,18 +2239,6 @@ struct ExportView: View {
         let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let imageURL = documentsDirectory.appendingPathComponent("images").appendingPathComponent(imageName)
         
-        // #region agent log
-        let fileExistsDocs = FileManager.default.fileExists(atPath: imageURL.path)
-        if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "JobDetailView.swift:1235", "message": "Documents directory check", "data": ["imageURL": imageURL.path, "fileExists": fileExistsDocs], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-            FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-            if let handle = FileHandle(forWritingAtPath: logPath) {
-                handle.seekToEndOfFile()
-                handle.write((logStr + "\n").data(using: .utf8)!)
-                handle.closeFile()
-            }
-        }
-        // #endregion
-        
         if FileManager.default.fileExists(atPath: imageURL.path),
            let imageData = FileManager.default.contents(atPath: imageURL.path) {
             print("MYDEBUG →", "Loaded signature image from documents: \(imageURL.path)")
@@ -1678,16 +2248,6 @@ struct ExportView: View {
         // Try app bundle resources
         if let bundleImageURL = Bundle.main.url(forResource: resourceName, withExtension: resourceType, subdirectory: "images"),
            let imageData = try? Data(contentsOf: bundleImageURL) {
-            // #region agent log
-            if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "D", "location": "JobDetailView.swift:1245", "message": "Bundle URL found", "data": ["bundleImageURL": bundleImageURL.path], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-                FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-                if let handle = FileHandle(forWritingAtPath: logPath) {
-                    handle.seekToEndOfFile()
-                    handle.write((logStr + "\n").data(using: .utf8)!)
-                    handle.closeFile()
-                }
-            }
-            // #endregion
             print("MYDEBUG →", "Loaded signature image from bundle URL: \(bundleImageURL.path)")
             return (imageData, mimeType)
         }
@@ -1696,18 +2256,6 @@ struct ExportView: View {
         if let bundlePath = Bundle.main.resourcePath {
             let imagesPath = (bundlePath as NSString).appendingPathComponent("images")
             let fullImagePath = (imagesPath as NSString).appendingPathComponent(imageName)
-            
-            // #region agent log
-            let fileExistsRes = FileManager.default.fileExists(atPath: fullImagePath)
-            if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "JobDetailView.swift:1255", "message": "Resource path check", "data": ["bundlePath": bundlePath, "imagesPath": imagesPath, "fullImagePath": fullImagePath, "fileExists": fileExistsRes], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-                FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-                if let handle = FileHandle(forWritingAtPath: logPath) {
-                    handle.seekToEndOfFile()
-                    handle.write((logStr + "\n").data(using: .utf8)!)
-                    handle.closeFile()
-                }
-            }
-            // #endregion
             
             if FileManager.default.fileExists(atPath: fullImagePath),
                let imageData = FileManager.default.contents(atPath: fullImagePath) {
@@ -1731,19 +2279,351 @@ struct ExportView: View {
             return (sourceImageData, mimeType)
         }
         
-        // #region agent log
-        if let logData = try? JSONSerialization.data(withJSONObject: ["sessionId": "debug-session", "runId": "run1", "hypothesisId": "F", "location": "JobDetailView.swift:1265", "message": "All paths failed", "data": ["imageName": imageName], "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]), let logStr = String(data: logData, encoding: .utf8) {
-            FileManager.default.createFile(atPath: logPath, contents: nil, attributes: nil)
-            if let handle = FileHandle(forWritingAtPath: logPath) {
-                handle.seekToEndOfFile()
-                handle.write((logStr + "\n").data(using: .utf8)!)
-                handle.closeFile()
-            }
-        }
-        // #endregion
-        
         print("MYDEBUG →", "Warning: Could not load signature image: \(imageName)")
         return (Data(), mimeType) // Return empty data if image not found
+    }
+}
+
+// MARK: - Report Customization Sheet (macOS)
+
+struct ReportCustomizationSheetView: View {
+    let job: Job
+    @Binding var includeEngineeringLetter: Bool
+    @Environment(\.managedObjectContext) private var viewContext
+    
+    @State private var editingCustomWeatherText: String = ""
+    @State private var editingConclusionComment: String = ""
+    @State private var editingIncludeEngineeringLetter: Bool = false
+    @State private var imageRefreshId = UUID()
+    @State private var showingReplaceOptionsForCustomHurricane = false
+    @State private var showingFilePickerForCustomHurricane = false
+    @State private var selectedPhotosItem: PhotosPickerItem?
+    
+    let onSave: () -> Void
+    let onCancel: () -> Void
+    
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    GroupBox("Custom Weather Image") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            if hasCustomHurricaneImage() {
+                                HStack {
+                                    Spacer()
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                }
+                            }
+                            if let previewImage = loadCustomHurricaneImage() {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("Current Image (double-click to replace)")
+                                        .font(.subheadline)
+                                        .fontWeight(.medium)
+                                    Image(nsImage: previewImage)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fit)
+                                        .frame(maxHeight: 150)
+                                        .cornerRadius(8)
+                                        .overlay(
+                                            Color.clear
+                                                .contentShape(Rectangle())
+                                                .onTapGesture(count: 2) {
+                                                    showingReplaceOptionsForCustomHurricane = true
+                                                }
+                                        )
+                                }
+                                .id(imageRefreshId)
+                            }
+                            
+                            Button(action: {
+                                showingReplaceOptionsForCustomHurricane = true
+                            }) {
+                                HStack {
+                                    Image(systemName: "photo")
+                                    Text(hasCustomHurricaneImage() ? "Replace Image" : "Select Image")
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            
+                            if hasCustomHurricaneImage() {
+                                Button(action: {
+                                    removeCustomHurricaneImage()
+                                    imageRefreshId = UUID()
+                                }) {
+                                    HStack {
+                                        Image(systemName: "trash")
+                                        Text("Remove")
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(.red)
+                            }
+                        }
+                        .padding()
+                    }
+                    
+                    GroupBox("Custom Weather Text") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            if hasCustomWeatherText() {
+                                HStack {
+                                    Spacer()
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                }
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Custom weather text")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                TextEditor(text: $editingCustomWeatherText)
+                                    .frame(minHeight: 120)
+                                    .padding(8)
+                                    .background(Color(.controlBackgroundColor))
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(Color(NSColor.separatorColor), lineWidth: 1)
+                                    )
+                            }
+                            Text("Leave empty to use default weather text")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            
+                            if hasCustomWeatherText() {
+                                Button(action: {
+                                    editingCustomWeatherText = ""
+                                }) {
+                                    HStack {
+                                        Image(systemName: "trash")
+                                        Text("Reset to Default")
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(.red)
+                            }
+                        }
+                        .padding()
+                    }
+                    
+                    GroupBox("Conclusion Comment") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            if hasConclusionComment() {
+                                HStack {
+                                    Spacer()
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                }
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Comment for PDF")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                TextEditor(text: $editingConclusionComment)
+                                    .frame(minHeight: 120)
+                                    .padding(8)
+                                    .background(Color(.controlBackgroundColor))
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .stroke(Color(NSColor.separatorColor), lineWidth: 1)
+                                    )
+                            }
+                            Text("This comment appears as a separate paragraph in the PDF between the conclusion and 'not tested windows' section")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            
+                            if hasConclusionComment() {
+                                Button(action: {
+                                    editingConclusionComment = ""
+                                }) {
+                                    HStack {
+                                        Image(systemName: "trash")
+                                        Text("Clear Comment")
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(.red)
+                            }
+                        }
+                        .padding()
+                    }
+                    
+                    GroupBox("Engineering Letter") {
+                        Toggle("Include Engineering Letter", isOn: $editingIncludeEngineeringLetter)
+                            .padding()
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
+            }
+            .navigationTitle("Report Customization")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: handleCancel)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save", action: handleSave)
+                        .fontWeight(.semibold)
+                }
+            }
+        }
+        .onAppear {
+            loadInitialValues()
+        }
+        .sheet(isPresented: $showingReplaceOptionsForCustomHurricane) {
+            ReplaceImageOptionsSheet(
+                selectedPhotosItem: $selectedPhotosItem,
+                onFileSelected: {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        showingFilePickerForCustomHurricane = true
+                    }
+                },
+                onCancel: { }
+            )
+        }
+        .fileImporter(
+            isPresented: $showingFilePickerForCustomHurricane,
+            allowedContentTypes: [.jpeg, .png, .heic, .tiff, .bmp, .gif],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                guard url.startAccessingSecurityScopedResource() else { return }
+                defer { url.stopAccessingSecurityScopedResource() }
+                if let image = NSImage(contentsOf: url) {
+                    saveCustomHurricaneImage(image, for: job)
+                    imageRefreshId = UUID()
+                }
+            case .failure(let error):
+                print("MYDEBUG →", "File picker error: \(error.localizedDescription)")
+            }
+        }
+        .onChange(of: selectedPhotosItem) { _, newItem in
+            guard let item = newItem else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self),
+                   let nsImage = NSImage(data: data) {
+                    await MainActor.run {
+                        saveCustomHurricaneImage(nsImage, for: job)
+                        selectedPhotosItem = nil
+                        imageRefreshId = UUID()
+                    }
+                }
+            }
+        }
+    }
+    
+    private func loadInitialValues() {
+        editingCustomWeatherText = job.customWeatherText ?? ""
+        editingConclusionComment = job.conclusionComment ?? ""
+        editingIncludeEngineeringLetter = job.includeEngineeringLetter ?? false
+    }
+    
+    private func hasCustomHurricaneImage() -> Bool {
+        guard let imagePath = job.customHurricaneImagePath else { return false }
+        return loadCustomHurricaneImage(from: imagePath) != nil
+    }
+    
+    private func loadCustomHurricaneImage() -> NSImage? {
+        guard let imagePath = job.customHurricaneImagePath else { return nil }
+        return loadCustomHurricaneImage(from: imagePath)
+    }
+    
+    private func loadCustomHurricaneImage(from imagePath: String) -> NSImage? {
+        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let imageURL = documentsDirectory.appendingPathComponent("custom_hurricane_images").appendingPathComponent(imagePath)
+        
+        guard FileManager.default.fileExists(atPath: imageURL.path) else {
+            return nil
+        }
+        
+        return NSImage(contentsOf: imageURL)
+    }
+    
+    private func hasCustomWeatherText() -> Bool {
+        guard let text = job.customWeatherText else { return false }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    private func hasConclusionComment() -> Bool {
+        guard let comment = job.conclusionComment else { return false }
+        return !comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    private func removeCustomHurricaneImage() {
+        if let imagePath = job.customHurricaneImagePath {
+            let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let imageURL = documentsDirectory.appendingPathComponent("custom_hurricane_images").appendingPathComponent(imagePath)
+            try? FileManager.default.removeItem(at: imageURL)
+        }
+        
+        job.customHurricaneImagePath = nil
+        
+        do {
+            try viewContext.save()
+        } catch {
+            print("MYDEBUG →", "Failed to remove custom hurricane image: \(error.localizedDescription)")
+        }
+    }
+    
+    private func handleSave() {
+        let trimmedWeatherText = editingCustomWeatherText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedWeatherText.isEmpty {
+            job.customWeatherText = nil
+        } else {
+            job.customWeatherText = editingCustomWeatherText
+        }
+        
+        let trimmedComment = editingConclusionComment.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedComment.isEmpty {
+            job.conclusionComment = nil
+        } else {
+            job.conclusionComment = editingConclusionComment
+        }
+        
+        job.includeEngineeringLetter = editingIncludeEngineeringLetter
+        includeEngineeringLetter = editingIncludeEngineeringLetter
+        
+        do {
+            try viewContext.save()
+            NotificationCenter.default.post(name: .jobDataUpdated, object: job)
+            onSave()
+        } catch {
+            print("MYDEBUG →", "Failed to save customization: \(error.localizedDescription)")
+        }
+    }
+    
+    private func handleCancel() {
+        onCancel()
+    }
+    
+    private func saveCustomHurricaneImage(_ image: NSImage, for job: Job) {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmapImage = NSBitmapImageRep(data: tiffData),
+              let imageData = bitmapImage.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+            print("MYDEBUG →", "Failed to convert custom hurricane image to JPEG data")
+            return
+        }
+        
+        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let imagesDirectory = documentsDirectory.appendingPathComponent("custom_hurricane_images")
+        
+        do {
+            try FileManager.default.createDirectory(at: imagesDirectory, withIntermediateDirectories: true)
+            
+            let fileName = "\(job.jobId ?? UUID().uuidString)_custom_hurricane.jpg"
+            let fileURL = imagesDirectory.appendingPathComponent(fileName)
+            
+            try imageData.write(to: fileURL)
+            job.customHurricaneImagePath = fileName
+            
+            try viewContext.save()
+            NotificationCenter.default.post(name: .jobDataUpdated, object: job)
+        } catch {
+            print("MYDEBUG →", "Failed to save custom hurricane image: \(error.localizedDescription)")
+        }
     }
 }
 
@@ -1753,6 +2633,78 @@ private let dateFormatter: DateFormatter = {
     formatter.timeStyle = .none
     return formatter
 }()
+
+// MARK: - JobStatusBadge
+
+struct JobStatusBadge: View {
+    let status: JobStatus
+    var iconOnly: Bool = false
+    
+    var body: some View {
+        if iconOnly {
+            Image(systemName: status.icon)
+                .font(.caption)
+                .foregroundColor(statusColor)
+                .padding(6)
+                .background(statusColor.opacity(0.2))
+                .clipShape(Circle())
+        } else {
+            HStack(spacing: 4) {
+                Image(systemName: status.icon)
+                    .font(.caption2)
+                Text(status.displayName)
+                    .font(.caption)
+                    .fontWeight(.medium)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(statusColor.opacity(0.2))
+            .foregroundColor(statusColor)
+            .clipShape(Capsule())
+        }
+    }
+    
+    private var statusColor: Color {
+        switch status {
+        case .newImport:
+            return .blue
+        case .inProgress:
+            return .orange
+        case .tested:
+            return .green
+        case .reportDelivered:
+            return .purple
+        case .backedUpToArchive:
+            return .gray
+        }
+    }
+}
+
+// MARK: - Replace Image Options Sheet (choose from Photos or File)
+private struct ReplaceImageOptionsSheet: View {
+    @Binding var selectedPhotosItem: PhotosPickerItem?
+    let onFileSelected: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Replace Image")
+                .font(.headline)
+            PhotosPicker(selection: $selectedPhotosItem, matching: .images) {
+                Label("Choose from Photos", systemImage: "photo.on.rectangle.angled")
+            }
+            .buttonStyle(.borderedProminent)
+            Button(action: onFileSelected) {
+                Label("Choose from File", systemImage: "folder")
+            }
+            .buttonStyle(.bordered)
+            Button("Cancel", role: .cancel, action: onCancel)
+                .buttonStyle(.borderless)
+        }
+        .padding(24)
+        .frame(minWidth: 280)
+    }
+}
 
 #Preview {
     JobDetailView(job: Job(context: PersistenceController.preview.container.viewContext))
