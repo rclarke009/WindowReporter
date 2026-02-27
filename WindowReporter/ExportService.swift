@@ -376,6 +376,12 @@ struct FieldResultsPackage {
         return window.testResult ?? "Pending"
     }
     
+    /// Display string for window type in PDF/DOCX/exports; never blank.
+    private func displayWindowType(for window: Window) -> String {
+        let t = window.windowType?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (t?.isEmpty == false) ? t! : "Not specified"
+    }
+    
     private func getPhotoCount(for window: Window, type: String) -> Int {
         let allPhotos = (window.photos?.allObjects as? [Photo]) ?? []
         return allPhotos.filter { $0.photoType == type }.count
@@ -1036,7 +1042,7 @@ struct FieldResultsPackage {
     // Table below title - PDF Y increases upward, so "below" = decrease Y (clear gap so title doesn't overlap table)
     let tableYTopDown = titleRect.minY - 25
     let isInaccessible = window.isInaccessible
-    let colWidths: [CGFloat] = isInaccessible ? [100, 80, 200] : [100, 80, 140, 80, 100]
+    let colWidths: [CGFloat] = isInaccessible ? [100, 80, 200] : [100, 80, 140, 100, 80, 100]
     var currentX: CGFloat = 50
     
     let headerFont = NSFont.boldSystemFont(ofSize: 12)
@@ -1044,7 +1050,7 @@ struct FieldResultsPackage {
         .font: headerFont,
         .foregroundColor: NSColor.black
     ]
-    let headers = isInaccessible ? ["Specimen No.", "Test No.", "Procedure"] : ["Specimen No.", "Test No.", "Procedure", "Start Time", "Completion"]
+    let headers = isInaccessible ? ["Specimen No.", "Test No.", "Procedure"] : ["Specimen No.", "Test No.", "Procedure", "Window Type", "Start Time", "Completion"]
     currentX = 50
     for (index, header) in headers.enumerated() {
         let attributedHeader = NSAttributedString(string: header, attributes: headerAttributes)
@@ -1080,7 +1086,7 @@ struct FieldResultsPackage {
         } else {
             completionTime = "N/A"
         }
-        dataRow = [specimenNumber, testNumber, procedure, startTime, completionTime]
+        dataRow = [specimenNumber, testNumber, procedure, displayWindowType(for: window), startTime, completionTime]
     }
     let headerLineHeight = headerFont.lineHeight
     let dataTextY = tableYTopDown - headerLineHeight - 7
@@ -1091,7 +1097,7 @@ struct FieldResultsPackage {
     }
     
     // Sections start below table (currentY = top of section A; sections return bottom Y)
-    var currentY: CGFloat = dataTextY - dataFont.lineHeight - 15
+    var currentY: CGFloat = dataTextY - dataFont.lineHeight - 4
     
     currentY = drawSection(context: context, pageRect: pageRect, title: "A. Test Specimen", startY: currentY, window: window, job: job)
     currentY = drawSectionB(context: context, pageRect: pageRect, title: "B. Specimen Type and Size", startY: currentY, window: window, job: job)
@@ -1099,10 +1105,10 @@ struct FieldResultsPackage {
     currentY = drawSectionD(context: context, pageRect: pageRect, title: "D. Specimen Age and Performance", startY: currentY, window: window, job: job)
     currentY = drawSectionE(context: context, pageRect: pageRect, title: "E. Weather Conditions", startY: currentY, window: window, job: job)
     
-    // Test Recap and Comments
-    currentY -= 3
+    // Test Recap and Comments (same spacing as Section A: 8pt after title)
+    currentY -= 2
     currentY = drawSectionHeader(context: context, pageRect: pageRect, title: "Test Recap and Comments:", startY: currentY)
-    currentY -= 3
+    currentY -= 0  // Same as Section A: gap so first line clears title
     
     let recapFont = NSFont.systemFont(ofSize: 11)
     let recapAttributes: [NSAttributedString.Key: Any] = [
@@ -1119,9 +1125,24 @@ struct FieldResultsPackage {
        let reason = window.value(forKey: "untestedReason") as? String, !reason.isEmpty {
         fullRecap += "\nReason: \(reason)"
     }
-    let recapHeight: CGFloat = 100
-    let textRect = CGRect(x: 60, y: currentY - recapHeight, width: pageRect.width - 120, height: recapHeight)
-    fullRecap.draw(in: textRect, withAttributes: recapAttributes)
+    let footerY: CGFloat = 50
+    let textWidth = pageRect.width - 120
+    let maxAvailableHeight = currentY - footerY - 10
+    
+    let paragraphStyle = NSMutableParagraphStyle()
+    paragraphStyle.lineBreakMode = .byWordWrapping
+    paragraphStyle.alignment = .left
+    var recapAttributesWithStyle = recapAttributes
+    recapAttributesWithStyle[.paragraphStyle] = paragraphStyle
+    
+    let attributedRecap = NSAttributedString(string: fullRecap, attributes: recapAttributesWithStyle)
+    let boundingRect = attributedRecap.boundingRect(with: CGSize(width: textWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
+    let lineHeight = recapFont.lineHeight
+    let minimumHeight = lineHeight * 2 + 5
+    let calculatedHeight = max(ceil(boundingRect.height) + 15, minimumHeight)
+    let recapHeight = min(calculatedHeight, max(0, maxAvailableHeight))
+    let textRect = CGRect(x: 60, y: currentY - recapHeight, width: textWidth, height: recapHeight)
+    attributedRecap.draw(in: textRect)
     
     // Footer at bottom of page
     let footerFont = NSFont.systemFont(ofSize: 10)
@@ -1129,9 +1150,8 @@ struct FieldResultsPackage {
         .font: footerFont,
         .foregroundColor: NSColor.gray
     ]
-    let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+    let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
     let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
-    let footerY: CGFloat = 50
     address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
     let pageText = "Page \(pageNumber) of \(totalPages)"
     let pageTextSize = pageText.size(withAttributes: footerAttributes)
@@ -1274,7 +1294,7 @@ struct FieldResultsPackage {
     private func drawSection(context: CGContext, pageRect: CGRect, title: String, startY: CGFloat, window: Window, job: Job) -> CGFloat {
         var currentY = startY
         currentY = drawSectionHeader(context: context, pageRect: pageRect, title: title, startY: currentY)
-        currentY -= 4
+        currentY -= 8  // Extra gap so first line (drawn at baseline) clears title; Test Recap needs none (paragraph rect adds leading)
         
         let font = NSFont.systemFont(ofSize: 11)
         let attributes: [NSAttributedString.Key: Any] = [
@@ -1307,17 +1327,17 @@ struct FieldResultsPackage {
         drawLabelValue(label: "Size Requirements:", value: "None", y: currentY)
         currentY -= 15
         
-        let description = "Residential \(window.windowType ?? "Window") - \(window.material ?? "Unknown Material")"
+        let description = "Residential \(displayWindowType(for: window)) - \(window.material ?? "Unknown Material")"
         drawLabelValue(label: "Description:", value: description, y: currentY)
         currentY -= 15
         
-        return currentY - 8
+        return currentY - 2
     }
     
     private func drawSectionB(context: CGContext, pageRect: CGRect, title: String, startY: CGFloat, window: Window, job: Job) -> CGFloat {
         var currentY = startY
         currentY = drawSectionHeader(context: context, pageRect: pageRect, title: title, startY: currentY)
-        currentY -= 4
+        currentY -= 8  // Same as Section A: gap so first line clears title
         
         let font = NSFont.systemFont(ofSize: 11)
         let attributes: [NSAttributedString.Key: Any] = [
@@ -1337,12 +1357,12 @@ struct FieldResultsPackage {
             value.draw(at: CGPoint(x: valueX, y: y), withAttributes: attributes)
         }
         
-        let manufacturerModelText = "Manufacturer: Unknown -- Model: Unknown"
-        let manufacturerModelRect = manufacturerModelText.boundingRect(with: CGSize(width: pageRect.width - 120, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attributes, context: nil)
-        manufacturerModelText.draw(in: CGRect(x: 60, y: currentY - manufacturerModelRect.height, width: pageRect.width - 120, height: manufacturerModelRect.height), withAttributes: attributes)
-        currentY -= manufacturerModelRect.height + 15
+        drawLabelValue(label: "Manufacturer:", value: "Unknown  --  Model: Unknown", y: currentY)
+        currentY -= 15
         
-        drawLabelValue(label: "Operation:", value: window.windowType ?? "Unknown", y: currentY)
+        drawLabelValue(label: "Window Type:", value: displayWindowType(for: window), y: currentY)
+        currentY -= 15
+        drawLabelValue(label: "Operation:", value: displayWindowType(for: window), y: currentY)
         currentY -= 15
         
         if window.width > 0 && window.height > 0 {
@@ -1353,13 +1373,13 @@ struct FieldResultsPackage {
             currentY -= 15
         }
         
-        return currentY - 8
+        return currentY - 2
     }
     
     private func drawSectionC(context: CGContext, pageRect: CGRect, title: String, startY: CGFloat, window: Window, job: Job) -> CGFloat {
         var currentY = startY
         currentY = drawSectionHeader(context: context, pageRect: pageRect, title: title, startY: currentY)
-        currentY -= 4
+        currentY -= 8  // Extra gap so first line (drawn at baseline) clears title
         
         let font = NSFont.systemFont(ofSize: 11)
         let attributes: [NSAttributedString.Key: Any] = [
@@ -1384,7 +1404,7 @@ struct FieldResultsPackage {
         drawLabelValue(label: "Location:", value: address, y: currentY)
         currentY -= 15
         
-        let exteriorFinishes = "Glass, \(window.material ?? "Unknown"), Framed Windows"
+        let exteriorFinishes = "Glass, \(window.material ?? "Aluminum"), Framed Windows"
         drawLabelValue(label: "Exterior Finishes:", value: exteriorFinishes, y: currentY)
         currentY -= 15
         
@@ -1406,13 +1426,13 @@ struct FieldResultsPackage {
         drawLabelValue(label: "Specimen Plumb, Level and Square:", value: "Yes, within industry standards", y: currentY)
         currentY -= 15
         
-        return currentY - 8
+        return currentY - 2
     }
     
     private func drawSectionD(context: CGContext, pageRect: CGRect, title: String, startY: CGFloat, window: Window, job: Job) -> CGFloat {
         var currentY = startY
         currentY = drawSectionHeader(context: context, pageRect: pageRect, title: title, startY: currentY)
-        currentY -= 4
+        currentY -= 8  // Extra gap so first line (drawn at baseline) clears title
         
         let font = NSFont.systemFont(ofSize: 11)
         let attributes: [NSAttributedString.Key: Any] = [
@@ -1438,13 +1458,13 @@ struct FieldResultsPackage {
         drawLabelValue(label: "Modifications Prior to Test:", value: "None", y: currentY)
         currentY -= 15
         
-        return currentY - 8
+        return currentY - 2
     }
     
     private func drawSectionE(context: CGContext, pageRect: CGRect, title: String, startY: CGFloat, window: Window, job: Job) -> CGFloat {
         var currentY = startY
         currentY = drawSectionHeader(context: context, pageRect: pageRect, title: title, startY: currentY)
-        currentY -= 4
+        currentY -= 8  // Extra gap so first line (drawn at baseline) clears title
         
         let font = NSFont.systemFont(ofSize: 11)
         let attributes: [NSAttributedString.Key: Any] = [
@@ -1472,12 +1492,12 @@ struct FieldResultsPackage {
         drawLabelValue(label: "Wind Speed/Direction (mph):", value: String(format: "%.0f mph", windSpeed), y: currentY)
         currentY -= 15
         
-        let barometricPrecipText = "Barometric Pressure (inHg): 29 inHg -- Precipitation: 0%"
-        let barometricPrecipRect = barometricPrecipText.boundingRect(with: CGSize(width: pageRect.width - 120, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attributes, context: nil)
-        barometricPrecipText.draw(in: CGRect(x: 60, y: currentY - barometricPrecipRect.height, width: pageRect.width - 120, height: barometricPrecipRect.height), withAttributes: attributes)
-        currentY -= barometricPrecipRect.height + 15
+        let barometric = 29.0
+        let precipitation = 0.0
+        drawLabelValue(label: "Barometric Pressure (inHg):", value: String(format: "%.0f inHg  --  Precipitation: %.0f%%", barometric, precipitation), y: currentY)
+        currentY -= 15
         
-        return currentY - 8
+        return currentY - 2
     }
     
     private func drawCoverPage(context: CGContext, pageRect: CGRect, job: Job) {
@@ -1856,7 +1876,7 @@ struct FieldResultsPackage {
         ]
         let lineHeight = headerFont.lineHeight
         title.draw(at: CGPoint(x: 55, y: startY - lineHeight), withAttributes: headerAttributes)
-        return startY - lineHeight - 8  // Clear gap below title so it doesn't overlap first data row
+        return startY - lineHeight - 6  // Tight gap below title before first data row
     }
     
     private func drawWindowTestingSummaryPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job, windows: [Window]) {
@@ -1924,7 +1944,7 @@ struct FieldResultsPackage {
         let rowHeight: CGFloat = 25
         let headerRowHeight: CGFloat = 25
         
-        // Column widths
+        // Column widths (no Type/casement column)
         let colWidths: [CGFloat] = [120, 80, 150, 150]
         let totalTableWidth = colWidths.reduce(0, +)
         let tableX = boxX + (boxWidth - totalTableWidth) / 2
@@ -3291,7 +3311,9 @@ struct FieldResultsPackage {
         lines.append(DocxSummaryLine(text: "B. Specimen Type and Size", spacingBefore: 0, spacingAfter: tightSpacing))
         // Combine Manufacturer and Model on same line
         lines.append(DocxSummaryLine(text: "Manufacturer: Unknown  --  Model: Unknown", spacingBefore: 0, spacingAfter: tightSpacing))
-        lines.append(DocxSummaryLine(text: "Operation: \(window.windowType?.trimmedOrNil ?? "Unknown")", spacingBefore: 0, spacingAfter: tightSpacing))
+        let docxWindowType = window.windowType?.trimmedOrNil ?? "Not specified"
+        lines.append(DocxSummaryLine(text: "Window Type: \(docxWindowType)", spacingBefore: 0, spacingAfter: tightSpacing))
+        lines.append(DocxSummaryLine(text: "Operation: \(docxWindowType)", spacingBefore: 0, spacingAfter: tightSpacing))
         // Combine Width and Height on same line
         var sizeComponents: [String] = []
         if window.width > 0 {
