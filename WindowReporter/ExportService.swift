@@ -70,6 +70,22 @@ private func drawOverheadImage(_ image: NSImage, in rect: CGRect, context: CGCon
     drawNSImage(image, in: rect, context: context)
 }
 
+/// Crops the image to the center 50% of its height (removes top and bottom 25%) to reduce vertical space without squishing.
+fileprivate func cropImageToCenterHalfHeight(_ image: NSImage) -> NSImage? {
+    guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        ?? image.tiffRepresentation.flatMap({ NSBitmapImageRep(data: $0) })?.cgImage else {
+        return nil
+    }
+    let w = cgImage.width
+    let h = cgImage.height
+    guard w > 0, h > 1 else { return image }
+    let cropH = h / 2
+    let cropY = h / 4
+    let cropRect = CGRect(x: 0, y: cropY, width: w, height: cropH)
+    guard let cropped = cgImage.cropping(to: cropRect) else { return image }
+    return NSImage(cgImage: cropped, size: NSSize(width: cropped.width, height: cropped.height))
+}
+
 /// Draw image with AspectFill - fills the rect, crops overflow (center crop). Used for Specimen Locations zoomed view.
 /// Pan values are in image pixel space; they shift the visible region (e.g. panX > 0 shows more of the right side).
 private func drawNSImageAspectFill(_ image: NSImage, in rect: CGRect, context: CGContext, panX: CGFloat = 0, panY: CGFloat = 0, zoomFactor: CGFloat = 1) {
@@ -356,7 +372,7 @@ struct FieldResultsPackage {
     
     private func dotColor(for window: Window) -> NSColor {
         if window.isInaccessible {
-            return .gray
+            return .blue
         }
         switch window.testResult {
         case "Pass":
@@ -2198,13 +2214,8 @@ struct FieldResultsPackage {
             .font: legendFont,
             .foregroundColor: NSColor.black
         ]
-        // Build legend: include Pending only if any window has a blue (pending) dot
-        let hasPending = windows.contains { !$0.isInaccessible && $0.testResult != "Pass" && $0.testResult != "Fail" }
-        var legendItems: [(NSColor, String)] = [(.green, "Pass"), (.red, "Fail")]
-        if hasPending {
-            legendItems.append((.blue, "Pending"))
-        }
-        legendItems.append((.gray, "Not Tested"))
+        // Legend: Pass, Fail, Not Tested (blue). Pending is not shown; user completes all tests before printing.
+        var legendItems: [(NSColor, String)] = [(.green, "Pass"), (.red, "Fail"), (.blue, "Not Tested")]
         var totalLegendWidth: CGFloat = 0
         for (_, label) in legendItems {
             totalLegendWidth += circleSize + 8 + label.size(withAttributes: legendTextAttributes).width
@@ -2607,6 +2618,23 @@ struct FieldResultsPackage {
         return NSImage(contentsOfFile: imageURL.path)
     }
     
+    /// Standard calibration letter (ASTM E331 & E1105 certificate) from app bundle.
+    private func loadEquipmentCalibrationImage() -> NSImage? {
+        if let imagePath = Bundle.main.path(forResource: "EquipmentCalibrationRainMaker", ofType: "jpg", inDirectory: "images"),
+           let image = NSImage(contentsOfFile: imagePath) {
+            return image
+        }
+        if let imagePath = Bundle.main.path(forResource: "EquipmentCalibrationRainMaker", ofType: "jpg"),
+           let image = NSImage(contentsOfFile: imagePath) {
+            return image
+        }
+        if let image = NSImage(named: "EquipmentCalibrationRainMaker") ?? NSImage(named: "images/EquipmentCalibrationRainMaker") {
+            return image
+        }
+        print("MYDEBUG →", "Equipment calibration (Rain Maker) image not found")
+        return nil
+    }
+    
     private func drawCalibrationPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
@@ -2618,9 +2646,9 @@ struct FieldResultsPackage {
         let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
         "CALIBRATED EQUIPMENT".draw(in: titleRect, withAttributes: titleAttributes)
         
-        // Content below title: use distance-from-top and convert to PDF Y when drawing
         var contentFromTop: CGFloat = titleYFromTop + titleHeight + 40
         
+        let equipmentCalibrationImage1 = loadEquipmentCalibrationImage()
         var gaugeImage: NSImage?
         if let imagePath = job.gaugeImagePath {
             gaugeImage = loadGaugeImage(from: imagePath)
@@ -2641,7 +2669,63 @@ struct FieldResultsPackage {
             .foregroundColor: NSColor.black
         ]
         
-        if let image = gaugeImage {
+        // Top row: standard calibration letter (left), job calibration photo (right)
+        if equipmentCalibrationImage1 != nil {
+            let spacing: CGFloat = 20
+            let totalWidth = pageRect.width - 100
+            let imageWidth = (totalWidth - spacing) / 2
+            let maxImageHeight: CGFloat = 200
+            var maxHeight: CGFloat = 0
+            
+            if let image1 = equipmentCalibrationImage1 {
+                let imageAspectRatio = image1.size.width / image1.size.height
+                var imgWidth = imageWidth
+                var imgHeight = imgWidth / imageAspectRatio
+                if imgHeight > maxImageHeight {
+                    imgHeight = maxImageHeight
+                    imgWidth = imgHeight * imageAspectRatio
+                }
+                let imageX: CGFloat = 50
+                let imagePdfY = pageRect.height - contentFromTop - imgHeight
+                drawNSImage(image1, in: CGRect(x: imageX, y: imagePdfY, width: imgWidth, height: imgHeight), context: context)
+                maxHeight = max(maxHeight, imgHeight)
+            }
+            
+            if let image2 = gaugeImage {
+                let imageAspectRatio = image2.size.width / image2.size.height
+                var imgWidth = imageWidth
+                var imgHeight = imgWidth / imageAspectRatio
+                if imgHeight > maxImageHeight {
+                    imgHeight = maxImageHeight
+                    imgWidth = imgHeight * imageAspectRatio
+                }
+                let allocatedX: CGFloat = 50 + imageWidth + spacing
+                let centerOffset = (imageWidth - imgWidth) / 2
+                let imageX = allocatedX + centerOffset
+                let imagePdfY = pageRect.height - contentFromTop - imgHeight
+                drawNSImage(image2, in: CGRect(x: imageX, y: imagePdfY, width: imgWidth, height: imgHeight), context: context)
+                maxHeight = max(maxHeight, imgHeight)
+            }
+            
+            contentFromTop += maxHeight + 15
+            
+            let rightPadding: CGFloat = 36
+            let leftText = "Calibrated equipment used for ASTM E1105 water testing."
+            let leftTextRect = CGRect(x: 50, y: pageRect.height - contentFromTop - 40, width: imageWidth - rightPadding, height: 40)
+            leftText.draw(in: leftTextRect, withAttributes: descriptionAttributes)
+            
+            if gaugeImage != nil {
+                let rightText = "Verifying pressure of equipment before ASTM E1105 water test which simulates real rain conditions."
+                let rightTextX = 50 + imageWidth + spacing
+                let rightTextRect = CGRect(x: rightTextX, y: pageRect.height - contentFromTop - 40, width: imageWidth - rightPadding, height: 40)
+                rightText.draw(in: rightTextRect, withAttributes: descriptionAttributes)
+            }
+            
+            contentFromTop += 40 + 15
+            "Location: Onsite".draw(at: CGPoint(x: 50, y: pageRect.height - contentFromTop - locationFont.lineHeight), withAttributes: locationAttributes)
+            contentFromTop += locationFont.lineHeight + 20
+        } else if let image = gaugeImage {
+            // No bundle letter: show only gauge image (centered) then captions
             let maxImageWidth: CGFloat = pageRect.width - 100
             let maxImageHeight: CGFloat = 200
             let imageAspectRatio = image.size.width / image.size.height
@@ -2655,21 +2739,21 @@ struct FieldResultsPackage {
             let imagePdfY = pageRect.height - contentFromTop - imageHeight
             drawNSImage(image, in: CGRect(x: imageX, y: imagePdfY, width: imageWidth, height: imageHeight), context: context)
             contentFromTop += imageHeight + 15
-            
             "Location: Onsite".draw(at: CGPoint(x: 50, y: pageRect.height - contentFromTop - locationFont.lineHeight), withAttributes: locationAttributes)
             contentFromTop += locationFont.lineHeight + 20
-            
             let descriptionText = "Verifying pressure of equipment before ASTM E1105 water test which simulates real rain conditions."
             let descriptionRect = CGRect(x: 50, y: pageRect.height - contentFromTop - 40, width: pageRect.width - 100, height: 40)
             descriptionText.draw(in: descriptionRect, withAttributes: descriptionAttributes)
             contentFromTop += 40 + 40
         }
         
+        // Front of property (bottom) — crop to center 50% height so text doesn't flow off page
         if let image = frontOfHomeImage {
+            let imageToDraw = cropImageToCenterHalfHeight(image) ?? image
             let maxImageWidth: CGFloat = pageRect.width - 100
             let maxImageHeight: CGFloat = 200
-            let imageAspectRatio = image.size.width / image.size.height
-            var imageWidth = min(maxImageWidth, image.size.width)
+            let imageAspectRatio = imageToDraw.size.width / imageToDraw.size.height
+            var imageWidth = min(maxImageWidth, imageToDraw.size.width)
             var imageHeight = imageWidth / imageAspectRatio
             if imageHeight > maxImageHeight {
                 imageHeight = maxImageHeight
@@ -2677,11 +2761,11 @@ struct FieldResultsPackage {
             }
             let imageX = (pageRect.width - imageWidth) / 2
             let imagePdfY = pageRect.height - contentFromTop - imageHeight
-            drawNSImage(image, in: CGRect(x: imageX, y: imagePdfY, width: imageWidth, height: imageHeight), context: context)
+            drawNSImage(imageToDraw, in: CGRect(x: imageX, y: imagePdfY, width: imageWidth, height: imageHeight), context: context)
             contentFromTop += imageHeight + 15
             
             "Front of Property".draw(at: CGPoint(x: 50, y: pageRect.height - contentFromTop - locationFont.lineHeight), withAttributes: locationAttributes)
-            contentFromTop += locationFont.lineHeight + 20
+            contentFromTop += locationFont.lineHeight
             
             let descriptionText = "Image of the front of the property for address verification."
             let descriptionRect = CGRect(x: 50, y: pageRect.height - contentFromTop - 40, width: pageRect.width - 100, height: 40)
@@ -3479,10 +3563,13 @@ struct FieldResultsPackage {
 class FullJobPackageExporter {
     let job: Job
     let documentsDirectory: URL
+    /// When set, used instead of job.includeEngineeringLetter so export reflects current UI choice even if user didn't tap Save.
+    let includeEngineeringLetterOverride: Bool?
     
-    init(job: Job) {
+    init(job: Job, includeEngineeringLetterOverride: Bool? = nil) {
         self.job = job
         self.documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        self.includeEngineeringLetterOverride = includeEngineeringLetterOverride
     }
     
     /// Generate a sanitized address-name identifier for use in filenames
@@ -3543,6 +3630,8 @@ class FullJobPackageExporter {
         var wideMapImageFile: String? = nil
         var frontOfHomeImageFile: String? = nil
         var gaugeImageFile: String? = nil
+        var equipmentCalibrationImage1File: String? = nil
+        var equipmentCalibrationImage2File: String? = nil
         
         if let overheadPath = job.overheadImagePath {
             let sourceURL = documentsDirectory.appendingPathComponent("overhead_images").appendingPathComponent(overheadPath)
@@ -3585,6 +3674,40 @@ class FullJobPackageExporter {
                 try FileManager.default.copyItem(at: sourceURL, to: destURL)
                 gaugeImageFile = "images/\(destFileName)"
                 print("✅ Copied gauge image")
+            }
+        }
+        
+        let calibrationDir = documentsDirectory.appendingPathComponent("equipment_calibration")
+        if let cal1Path = job.equipmentCalibrationImage1Path {
+            let sourceURL = calibrationDir.appendingPathComponent(cal1Path)
+            if FileManager.default.fileExists(atPath: sourceURL.path) {
+                let destFileName = "equipment-calibration-1.jpg"
+                let destURL = imagesDir.appendingPathComponent(destFileName)
+                try FileManager.default.copyItem(at: sourceURL, to: destURL)
+                equipmentCalibrationImage1File = "images/\(destFileName)"
+                print("✅ Copied equipment calibration image 1")
+            }
+        }
+        if let cal2Path = job.equipmentCalibrationImage2Path {
+            let sourceURL = calibrationDir.appendingPathComponent(cal2Path)
+            if FileManager.default.fileExists(atPath: sourceURL.path) {
+                let destFileName = "equipment-calibration-2.jpg"
+                let destURL = imagesDir.appendingPathComponent(destFileName)
+                try FileManager.default.copyItem(at: sourceURL, to: destURL)
+                equipmentCalibrationImage2File = "images/\(destFileName)"
+                print("✅ Copied equipment calibration image 2")
+            }
+        }
+        
+        var customHurricaneImageFile: String? = nil
+        if let hurricanePath = job.customHurricaneImagePath {
+            let sourceURL = documentsDirectory.appendingPathComponent("custom_hurricane_images").appendingPathComponent(hurricanePath)
+            if FileManager.default.fileExists(atPath: sourceURL.path) {
+                let destFileName = "custom-hurricane.jpg"
+                let destURL = imagesDir.appendingPathComponent(destFileName)
+                try FileManager.default.copyItem(at: sourceURL, to: destURL)
+                customHurricaneImageFile = "images/\(destFileName)"
+                print("✅ Copied custom hurricane image")
             }
         }
         
@@ -3693,6 +3816,19 @@ class FullJobPackageExporter {
             overheadImageSourceUrl: job.overheadImageSourceUrl,
             overheadImageFetchedAt: job.overheadImageFetchedAt?.timeIntervalSince1970,
             scalePixelsPerFoot: job.scalePixelsPerFoot,
+            equipmentCalibrationImage1File: equipmentCalibrationImage1File,
+            equipmentCalibrationImage2File: equipmentCalibrationImage2File,
+            weatherFetchedAt: job.weatherFetchedAt?.timeIntervalSince1970,
+            internalNotes: job.internalNotes,
+            conclusionComment: job.conclusionComment,
+            interiorFinishes: job.interiorFinishes,
+            exteriorFinishes: job.exteriorFinishes,
+            jobStatus: job.jobStatus,
+            reportDeliveredAt: job.reportDeliveredAt?.timeIntervalSince1970,
+            backedUpToArchiveAt: job.backedUpToArchiveAt?.timeIntervalSince1970,
+            includeEngineeringLetter: includeEngineeringLetterOverride ?? job.includeEngineeringLetter,
+            customWeatherText: job.customWeatherText,
+            customHurricaneImageFile: customHurricaneImageFile,
             windows: fullWindows
         )
         
@@ -4148,12 +4284,18 @@ fileprivate final class DocxTemplateRenderer {
             }
         }
         
-        // Add calibration section at the end
+        // Add calibration section at the end: standard letter (left), job calibration photo (right), then front of home
         body += pageBreak()
         body += xmlLargeBoldParagraph("CALIBRATED EQUIPMENT", color: "276091", spacingBefore: 446)
         body += xmlSpacerParagraph(before: 240, after: 240)
         
-        // Load and add gauge image if available
+        var calibrationEntries: [(relId: String, docPrId: Int, resource: DocxImageResource, caption: String)] = []
+        
+        if let letterResource = loadEquipmentCalibrationResource(),
+           let letterRef = try? addImageResource(letterResource, prefix: "calibrationLetter") {
+            calibrationEntries.append((letterRef.relId, letterRef.docPrId, letterResource, "Calibrated equipment used for ASTM E1105 water testing."))
+        }
+        
         if let gaugeImagePath = job.gaugeImagePath {
             let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
             let imageURL = documentsDirectory.appendingPathComponent("gauge_images").appendingPathComponent(gaugeImagePath)
@@ -4168,29 +4310,33 @@ fileprivate final class DocxTemplateRenderer {
                 if heightEMU > maxHeightEMU {
                     heightEMU = maxHeightEMU
                 }
-                
                 let gaugeResource = DocxImageResource(data: gaugeData, fileExtension: "jpeg", cx: widthEMU, cy: heightEMU)
                 if let gaugeRef = try? addImageResource(gaugeResource, prefix: "gauge") {
-                    body += xmlSpacerParagraph(before: 120, after: 120, centered: true)
-                    body += xmlImageParagraph(relId: gaugeRef.relId, docPrId: gaugeRef.docPrId, cx: gaugeResource.cx, cy: gaugeResource.cy, alignment: "center")
-                    body += xmlSpacerParagraph(before: 120, after: 120, centered: true)
-                    body += xmlParagraph("Location: Onsite", style: "Normal")
-                    body += xmlParagraph("Verifying pressure of equipment before ASTM E1105 water test which simulates real rain conditions.", style: "Normal")
-                    body += xmlSpacerParagraph(before: 240, after: 240)
+                    calibrationEntries.append((gaugeRef.relId, gaugeRef.docPrId, gaugeResource, "Verifying pressure of equipment before ASTM E1105 water test which simulates real rain conditions."))
                 }
             }
         }
         
-        // Load and add front of home image if available
+        if !calibrationEntries.isEmpty {
+            let columns = calibrationEntries.count
+            body += xmlSpacerParagraph(before: 120, after: 120, centered: true)
+            body += xmlPhotoTable(rows: 1, columns: columns, entries: calibrationEntries, centered: true)
+            body += xmlSpacerParagraph(before: 120, after: 120, centered: true)
+            body += xmlParagraph("Location: Onsite", style: "Normal")
+            body += xmlSpacerParagraph(before: 240, after: 240)
+        }
+        
+        // Load and add front of home image if available (cropped to center 50% height so text doesn't flow off page)
         if let frontOfHomeImagePath = job.frontOfHomeImagePath {
             let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
             let imageURL = documentsDirectory.appendingPathComponent("front_of_home_images").appendingPathComponent(frontOfHomeImagePath)
             if FileManager.default.fileExists(atPath: imageURL.path),
-               let frontOfHomeImage = NSImage(contentsOfFile: imageURL.path),
-               let frontOfHomeData = frontOfHomeImage.docxCompressedData(maxDimension: 1600, compressionQuality: 0.7) {
+               let frontOfHomeImage = NSImage(contentsOfFile: imageURL.path) {
+                let imageForExport = cropImageToCenterHalfHeight(frontOfHomeImage) ?? frontOfHomeImage
+                if let frontOfHomeData = imageForExport.docxCompressedData(maxDimension: 1600, compressionQuality: 0.7) {
                 let widthInches: CGFloat = 3.5
                 let widthEMU = Int(widthInches * 914_400)
-                let aspectRatio = frontOfHomeImage.size.width > 0 ? frontOfHomeImage.size.height / frontOfHomeImage.size.width : 1
+                let aspectRatio = imageForExport.size.width > 0 ? imageForExport.size.height / imageForExport.size.width : 1
                 var heightEMU = Int(CGFloat(widthEMU) * aspectRatio)
                 let maxHeightEMU = Int(4.0 * 914_400)
                 if heightEMU > maxHeightEMU {
@@ -4204,6 +4350,7 @@ fileprivate final class DocxTemplateRenderer {
                     body += xmlSpacerParagraph(before: 120, after: 120, centered: true)
                     body += xmlParagraph("Front of Property", style: "Normal")
                     body += xmlParagraph("Image of the front of the property for address verification.", style: "Normal")
+                }
                 }
             }
         }
@@ -4594,6 +4741,41 @@ fileprivate final class DocxTemplateRenderer {
         let stampSizeEMU = Int(stampSizeInches * 914_400)
         
         return DocxImageResource(data: data, fileExtension: fileExtension, cx: stampSizeEMU, cy: stampSizeEMU)
+    }
+    
+    /// Standard calibration letter (ASTM certificate) for DOCX export.
+    private func loadEquipmentCalibrationResource() -> DocxImageResource? {
+        var imageData: Data?
+        var image: NSImage?
+        var fileExtension = "jpg"
+        
+        if let path = Bundle.main.path(forResource: "EquipmentCalibrationRainMaker", ofType: "jpg", inDirectory: "images"),
+           let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
+            imageData = data
+            image = NSImage(data: data)
+        } else if let path = Bundle.main.path(forResource: "EquipmentCalibrationRainMaker", ofType: "jpg"),
+                  let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
+            imageData = data
+            image = NSImage(data: data)
+        } else if let img = NSImage(named: "EquipmentCalibrationRainMaker") ?? NSImage(named: "images/EquipmentCalibrationRainMaker"),
+                  let tiffData = img.tiffRepresentation,
+                  let bitmapRep = NSBitmapImageRep(data: tiffData),
+                  let data = bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) {
+            imageData = data
+            image = img
+        }
+        
+        guard let data = imageData, let img = image, img.size.width > 0 else { return nil }
+        
+        let widthInches: CGFloat = 3.5
+        let widthEMU = Int(widthInches * 914_400)
+        let aspectRatio = img.size.height / img.size.width
+        var heightEMU = Int(CGFloat(widthEMU) * aspectRatio)
+        let maxHeightEMU = Int(4.0 * 914_400)
+        if heightEMU > maxHeightEMU {
+            heightEMU = maxHeightEMU
+        }
+        return DocxImageResource(data: data, fileExtension: fileExtension, cx: widthEMU, cy: heightEMU)
     }
     
     private func generateEngineeringLetterXML(job: Job, engineerStampRef: (relId: String, docPrId: Int)?) -> String {

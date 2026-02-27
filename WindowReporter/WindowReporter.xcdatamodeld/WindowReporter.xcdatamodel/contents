@@ -9,6 +9,7 @@
         <attribute name="state" optional="YES" attributeType="String"/>
         <attribute name="zip" optional="YES" attributeType="String"/>
         <attribute name="notes" optional="YES" attributeType="String"/>
+        <attribute name="internalNotes" optional="YES" attributeType="String"/>
         <attribute name="phoneNumber" optional="YES" attributeType="String"/>
         <attribute name="areasOfConcern" optional="YES" attributeType="String"/>
         <attribute name="overheadImagePath" optional="YES" attributeType="String"/>
@@ -17,8 +18,11 @@
         <attribute name="overheadImageFetchedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="wideMapImagePath" optional="YES" attributeType="String"/>
         <attribute name="scalePixelsPerFoot" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
+        <attribute name="weatherFetchedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="frontOfHomeImagePath" optional="YES" attributeType="String"/>
         <attribute name="gaugeImagePath" optional="YES" attributeType="String"/>
+        <attribute name="equipmentCalibrationImage1Path" optional="YES" attributeType="String"/>
+        <attribute name="equipmentCalibrationImage2Path" optional="YES" attributeType="String"/>
         <attribute name="inspectorName" optional="YES" attributeType="String"/>
         <attribute name="inspectionDate" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="temperature" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
@@ -36,6 +40,8 @@
         <attribute name="jobStatus" optional="YES" attributeType="String"/>
         <attribute name="customHurricaneImagePath" optional="YES" attributeType="String"/>
         <attribute name="customWeatherText" optional="YES" attributeType="String"/>
+        <attribute name="interiorFinishes" optional="YES" attributeType="String"/>
+        <attribute name="exteriorFinishes" optional="YES" attributeType="String"/>
         <attribute name="conclusionComment" optional="YES" attributeType="String"/>
         <relationship name="windows" optional="YES" toMany="YES" deletionRule="Cascade" destinationEntity="Window" inverseName="job" inverseEntity="Window"/>
     </entity>
