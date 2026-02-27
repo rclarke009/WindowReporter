@@ -11,6 +11,20 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		A978FE002F5141120050C6E1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A97DF75F2ECD42E3009A20DD /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A978FDED2F5141110050C6E1;
+			remoteInfo = BetaWindowReporter;
+		};
+		A978FE0A2F5141120050C6E1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A97DF75F2ECD42E3009A20DD /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A978FDED2F5141110050C6E1;
+			remoteInfo = BetaWindowReporter;
+		};
 		A97DF7782ECD42E4009A20DD /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = A97DF75F2ECD42E3009A20DD /* Project object */;
@@ -28,14 +42,68 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		A978FDEE2F5141110050C6E1 /* BetaWindowReporter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BetaWindowReporter.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A978FDFF2F5141120050C6E1 /* BetaWindowReporterTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BetaWindowReporterTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A978FE092F5141120050C6E1 /* BetaWindowReporterUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BetaWindowReporterUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A97DF7672ECD42E3009A20DD /* WindowReporter.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WindowReporter.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A97DF7772ECD42E4009A20DD /* WindowReporterTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WindowReporterTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A97DF7812ECD42E4009A20DD /* WindowReporterUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WindowReporterUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A978FE212F51412E0050C6E1 /* Exceptions for "WindowReporter" folder in "BetaWindowReporter" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				AddressCleaningUtility.swift,
+				Assets.xcassets,
+				BaseTemplateWithImage.docx,
+				ContentView.swift,
+				CreateJobView.swift,
+				EditJobView.swift,
+				ExportService.swift,
+				images/EngineerStamp.png,
+				images/EquipmentCalibrationRainMaker.jpg,
+				images/HurricaneMilton.png,
+				images/PartsOfWindow.png,
+				images/screenshotOfCoverPageImage.png,
+				images/TrueLogoDark.png,
+				images/TrueLogoEmailLight.jpg,
+				ImportJobsView.swift,
+				"window-types/window-awning.png",
+				"window-types/window-casement.png",
+				"window-types/window-center-pivot.png",
+				"window-types/window-doublehung.png",
+				"window-types/window-fixed.png",
+				"window-types/window-hopper.png",
+				"window-types/window-jalousie.png",
+				"window-types/window-singlehung.png",
+				"window-types/window-sliding.png",
+			);
+			target = A978FDED2F5141110050C6E1 /* BetaWindowReporter */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		A978FDEF2F5141110050C6E1 /* BetaWindowReporter */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = BetaWindowReporter;
+			sourceTree = "<group>";
+		};
+		A978FE022F5141120050C6E1 /* BetaWindowReporterTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = BetaWindowReporterTests;
+			sourceTree = "<group>";
+		};
+		A978FE0C2F5141120050C6E1 /* BetaWindowReporterUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = BetaWindowReporterUITests;
+			sourceTree = "<group>";
+		};
 		A97DF7692ECD42E3009A20DD /* WindowReporter */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A978FE212F51412E0050C6E1 /* Exceptions for "WindowReporter" folder in "BetaWindowReporter" target */,
+			);
 			path = WindowReporter;
 			sourceTree = "<group>";
 		};
@@ -52,6 +120,27 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		A978FDEB2F5141110050C6E1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A978FDFC2F5141120050C6E1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A978FE062F5141120050C6E1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A97DF7642ECD42E3009A20DD /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -83,6 +172,9 @@
 				A97DF7692ECD42E3009A20DD /* WindowReporter */,
 				A97DF77A2ECD42E4009A20DD /* WindowReporterTests */,
 				A97DF7842ECD42E4009A20DD /* WindowReporterUITests */,
+				A978FDEF2F5141110050C6E1 /* BetaWindowReporter */,
+				A978FE022F5141120050C6E1 /* BetaWindowReporterTests */,
+				A978FE0C2F5141120050C6E1 /* BetaWindowReporterUITests */,
 				A97DF7682ECD42E3009A20DD /* Products */,
 			);
 			sourceTree = "<group>";
@@ -93,6 +185,9 @@
 				A97DF7672ECD42E3009A20DD /* WindowReporter.app */,
 				A97DF7772ECD42E4009A20DD /* WindowReporterTests.xctest */,
 				A97DF7812ECD42E4009A20DD /* WindowReporterUITests.xctest */,
+				A978FDEE2F5141110050C6E1 /* BetaWindowReporter.app */,
+				A978FDFF2F5141120050C6E1 /* BetaWindowReporterTests.xctest */,
+				A978FE092F5141120050C6E1 /* BetaWindowReporterUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -100,6 +195,74 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		A978FDED2F5141110050C6E1 /* BetaWindowReporter */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A978FE112F5141120050C6E1 /* Build configuration list for PBXNativeTarget "BetaWindowReporter" */;
+			buildPhases = (
+				A978FDEA2F5141110050C6E1 /* Sources */,
+				A978FDEB2F5141110050C6E1 /* Frameworks */,
+				A978FDEC2F5141110050C6E1 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A978FDEF2F5141110050C6E1 /* BetaWindowReporter */,
+			);
+			name = BetaWindowReporter;
+			packageProductDependencies = (
+			);
+			productName = BetaWindowReporter;
+			productReference = A978FDEE2F5141110050C6E1 /* BetaWindowReporter.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A978FDFE2F5141120050C6E1 /* BetaWindowReporterTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A978FE142F5141120050C6E1 /* Build configuration list for PBXNativeTarget "BetaWindowReporterTests" */;
+			buildPhases = (
+				A978FDFB2F5141120050C6E1 /* Sources */,
+				A978FDFC2F5141120050C6E1 /* Frameworks */,
+				A978FDFD2F5141120050C6E1 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A978FE012F5141120050C6E1 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A978FE022F5141120050C6E1 /* BetaWindowReporterTests */,
+			);
+			name = BetaWindowReporterTests;
+			packageProductDependencies = (
+			);
+			productName = BetaWindowReporterTests;
+			productReference = A978FDFF2F5141120050C6E1 /* BetaWindowReporterTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		A978FE082F5141120050C6E1 /* BetaWindowReporterUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A978FE172F5141120050C6E1 /* Build configuration list for PBXNativeTarget "BetaWindowReporterUITests" */;
+			buildPhases = (
+				A978FE052F5141120050C6E1 /* Sources */,
+				A978FE062F5141120050C6E1 /* Frameworks */,
+				A978FE072F5141120050C6E1 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A978FE0B2F5141120050C6E1 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A978FE0C2F5141120050C6E1 /* BetaWindowReporterUITests */,
+			);
+			name = BetaWindowReporterUITests;
+			packageProductDependencies = (
+			);
+			productName = BetaWindowReporterUITests;
+			productReference = A978FE092F5141120050C6E1 /* BetaWindowReporterUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		A97DF7662ECD42E3009A20DD /* WindowReporter */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = A97DF78A2ECD42E4009A20DD /* Build configuration list for PBXNativeTarget "WindowReporter" */;
@@ -179,6 +342,17 @@
 				LastSwiftUpdateCheck = 2610;
 				LastUpgradeCheck = 2610;
 				TargetAttributes = {
+					A978FDED2F5141110050C6E1 = {
+						CreatedOnToolsVersion = 26.1.1;
+					};
+					A978FDFE2F5141120050C6E1 = {
+						CreatedOnToolsVersion = 26.1.1;
+						TestTargetID = A978FDED2F5141110050C6E1;
+					};
+					A978FE082F5141120050C6E1 = {
+						CreatedOnToolsVersion = 26.1.1;
+						TestTargetID = A978FDED2F5141110050C6E1;
+					};
 					A97DF7662ECD42E3009A20DD = {
 						CreatedOnToolsVersion = 26.1;
 					};
@@ -212,11 +386,35 @@
 				A97DF7662ECD42E3009A20DD /* WindowReporter */,
 				A97DF7762ECD42E4009A20DD /* WindowReporterTests */,
 				A97DF7802ECD42E4009A20DD /* WindowReporterUITests */,
+				A978FDED2F5141110050C6E1 /* BetaWindowReporter */,
+				A978FDFE2F5141120050C6E1 /* BetaWindowReporterTests */,
+				A978FE082F5141120050C6E1 /* BetaWindowReporterUITests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		A978FDEC2F5141110050C6E1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A978FDFD2F5141120050C6E1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A978FE072F5141120050C6E1 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A97DF7652ECD42E3009A20DD /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -241,6 +439,27 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		A978FDEA2F5141110050C6E1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A978FDFB2F5141120050C6E1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A978FE052F5141120050C6E1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A97DF7632ECD42E3009A20DD /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -265,6 +484,16 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		A978FE012F5141120050C6E1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A978FDED2F5141110050C6E1 /* BetaWindowReporter */;
+			targetProxy = A978FE002F5141120050C6E1 /* PBXContainerItemProxy */;
+		};
+		A978FE0B2F5141120050C6E1 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A978FDED2F5141110050C6E1 /* BetaWindowReporter */;
+			targetProxy = A978FE0A2F5141120050C6E1 /* PBXContainerItemProxy */;
+		};
 		A97DF7792ECD42E4009A20DD /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = A97DF7662ECD42E3009A20DD /* WindowReporter */;
@@ -278,6 +507,150 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		A978FE122F5141120050C6E1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Q3CS4DPG9Y;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = RestRiseGrow.BetaWindowReporter;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A978FE132F5141120050C6E1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Q3CS4DPG9Y;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = RestRiseGrow.BetaWindowReporter;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		A978FE152F5141120050C6E1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Q3CS4DPG9Y;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = RestRiseGrow.BetaWindowReporterTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BetaWindowReporter.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BetaWindowReporter";
+			};
+			name = Debug;
+		};
+		A978FE162F5141120050C6E1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Q3CS4DPG9Y;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.1;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = RestRiseGrow.BetaWindowReporterTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BetaWindowReporter.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/BetaWindowReporter";
+			};
+			name = Release;
+		};
+		A978FE182F5141120050C6E1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Q3CS4DPG9Y;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = RestRiseGrow.BetaWindowReporterUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = BetaWindowReporter;
+			};
+			name = Debug;
+		};
+		A978FE192F5141120050C6E1 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Q3CS4DPG9Y;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = RestRiseGrow.BetaWindowReporterUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = BetaWindowReporter;
+			};
+			name = Release;
+		};
 		A97DF78B2ECD42E4009A20DD /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -551,6 +924,33 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		A978FE112F5141120050C6E1 /* Build configuration list for PBXNativeTarget "BetaWindowReporter" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A978FE122F5141120050C6E1 /* Debug */,
+				A978FE132F5141120050C6E1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A978FE142F5141120050C6E1 /* Build configuration list for PBXNativeTarget "BetaWindowReporterTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A978FE152F5141120050C6E1 /* Debug */,
+				A978FE162F5141120050C6E1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A978FE172F5141120050C6E1 /* Build configuration list for PBXNativeTarget "BetaWindowReporterUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A978FE182F5141120050C6E1 /* Debug */,
+				A978FE192F5141120050C6E1 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		A97DF7622ECD42E3009A20DD /* Build configuration list for PBXProject "WindowReporter" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

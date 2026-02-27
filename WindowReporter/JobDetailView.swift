@@ -1819,7 +1819,9 @@ struct ExportView: View {
         
         Task {
             do {
-                let exporter = FullJobPackageExporter(job: job)
+                job.managedObjectContext?.refresh(job, mergeChanges: true)
+                let includeEngLetter = job.includeEngineeringLetter ?? includeEngineeringLetter
+                let exporter = FullJobPackageExporter(job: job, includeEngineeringLetterOverride: includeEngLetter)
                 let zipURL = try await exporter.export()
                 
                 await MainActor.run {

@@ -86,6 +86,19 @@ struct FullJobPackage: Codable {
         let overheadImageSourceUrl: String?
         let overheadImageFetchedAt: Double?
         let scalePixelsPerFoot: Double?
+        let equipmentCalibrationImage1File: String?
+        let equipmentCalibrationImage2File: String?
+        let weatherFetchedAt: Double?
+        let internalNotes: String?
+        let conclusionComment: String?
+        let interiorFinishes: String?
+        let exteriorFinishes: String?
+        let jobStatus: String?
+        let reportDeliveredAt: Double?
+        let backedUpToArchiveAt: Double?
+        let includeEngineeringLetter: Bool?
+        let customWeatherText: String?
+        let customHurricaneImageFile: String?
         let windows: [FullWindowData]
     }
     
@@ -517,6 +530,16 @@ class JobImportService: ObservableObject {
             if let weatherCondition = package.job.weatherCondition { job.weatherCondition = weatherCondition }
             if let humidity = package.job.humidity { job.humidity = humidity }
             if let windSpeed = package.job.windSpeed { job.windSpeed = windSpeed }
+            if let weatherFetchedAt = package.job.weatherFetchedAt { job.weatherFetchedAt = Date(timeIntervalSince1970: weatherFetchedAt) }
+            if let internalNotes = package.job.internalNotes { job.internalNotes = internalNotes }
+            if let conclusionComment = package.job.conclusionComment { job.conclusionComment = conclusionComment }
+            if let interiorFinishes = package.job.interiorFinishes { job.interiorFinishes = interiorFinishes }
+            if let exteriorFinishes = package.job.exteriorFinishes { job.exteriorFinishes = exteriorFinishes }
+            if let jobStatus = package.job.jobStatus { job.jobStatus = jobStatus }
+            if let reportDeliveredAt = package.job.reportDeliveredAt { job.reportDeliveredAt = Date(timeIntervalSince1970: reportDeliveredAt) }
+            if let backedUpToArchiveAt = package.job.backedUpToArchiveAt { job.backedUpToArchiveAt = Date(timeIntervalSince1970: backedUpToArchiveAt) }
+            if let includeEngineeringLetter = package.job.includeEngineeringLetter { job.includeEngineeringLetter = includeEngineeringLetter }
+            if let customWeatherText = package.job.customWeatherText { job.customWeatherText = customWeatherText }
             job.updatedAt = Date()
         } else {
             job = Job(context: context)
@@ -541,6 +564,16 @@ class JobImportService: ObservableObject {
             job.windSpeed = package.job.windSpeed ?? 0.0
             job.createdAt = package.job.createdAt.map { Date(timeIntervalSince1970: $0) } ?? Date()
             job.updatedAt = Date()
+            job.weatherFetchedAt = package.job.weatherFetchedAt.map { Date(timeIntervalSince1970: $0) }
+            job.internalNotes = package.job.internalNotes
+            job.conclusionComment = package.job.conclusionComment
+            job.interiorFinishes = package.job.interiorFinishes
+            job.exteriorFinishes = package.job.exteriorFinishes
+            job.jobStatus = package.job.jobStatus
+            job.reportDeliveredAt = package.job.reportDeliveredAt.map { Date(timeIntervalSince1970: $0) }
+            job.backedUpToArchiveAt = package.job.backedUpToArchiveAt.map { Date(timeIntervalSince1970: $0) }
+            job.includeEngineeringLetter = package.job.includeEngineeringLetter ?? false
+            job.customWeatherText = package.job.customWeatherText
         }
         
         await MainActor.run { importProgress = 0.5 }
@@ -568,6 +601,18 @@ class JobImportService: ObservableObject {
             try await importGaugeImage(from: directory, filePath: gaugeFile, for: job)
         } else {
             print("⚠️ No gaugeImageFile in package")
+        }
+        if let calibration1File = package.job.equipmentCalibrationImage1File {
+            print("📷 Importing equipment calibration image 1: \(calibration1File)")
+            try await importEquipmentCalibrationImage(from: directory, filePath: calibration1File, for: job, slot: 1)
+        }
+        if let calibration2File = package.job.equipmentCalibrationImage2File {
+            print("📷 Importing equipment calibration image 2: \(calibration2File)")
+            try await importEquipmentCalibrationImage(from: directory, filePath: calibration2File, for: job, slot: 2)
+        }
+        if let hurricaneFile = package.job.customHurricaneImageFile {
+            print("📷 Importing custom hurricane image: \(hurricaneFile)")
+            try await importCustomHurricaneImage(from: directory, filePath: hurricaneFile, for: job)
         }
         
         if let sourceName = package.job.overheadImageSourceName { job.overheadImageSourceName = sourceName }
@@ -1049,6 +1094,98 @@ class JobImportService: ObservableObject {
         try FileManager.default.copyItem(at: finalURL, to: destinationURL)
         job.gaugeImagePath = fileName
         print("✅ Successfully imported gauge image: \(fileName)")
+    }
+    
+    private func importEquipmentCalibrationImage(from directory: URL, filePath: String, for job: Job, slot: Int) async throws {
+        var imageFilePath = filePath
+        if imageFilePath.hasPrefix("/") {
+            imageFilePath = String(imageFilePath.dropFirst())
+        }
+        var sourceURL: URL?
+        let directPath = directory.appendingPathComponent(imageFilePath)
+        if FileManager.default.fileExists(atPath: directPath.path) {
+            sourceURL = directPath
+        } else if imageFilePath.contains("images/") {
+            let pathWithImages = directory.appendingPathComponent(imageFilePath)
+            if FileManager.default.fileExists(atPath: pathWithImages.path) { sourceURL = pathWithImages }
+        }
+        if sourceURL == nil && imageFilePath.contains("images/") {
+            let privatePath = imageFilePath.replacingOccurrences(of: "images/", with: "privateimages/")
+            let pathWithPrivate = directory.appendingPathComponent(privatePath)
+            if FileManager.default.fileExists(atPath: pathWithPrivate.path) { sourceURL = pathWithPrivate }
+        }
+        if sourceURL == nil {
+            let filename = (imageFilePath as NSString).lastPathComponent
+            for dir in ["images", "privateimages", "equipment_calibration"] {
+                let testPath = directory.appendingPathComponent(dir).appendingPathComponent(filename)
+                if FileManager.default.fileExists(atPath: testPath.path) {
+                    sourceURL = testPath
+                    break
+                }
+            }
+        }
+        guard let finalURL = sourceURL else {
+            print("⚠️ Equipment calibration image \(slot) not found for: \(filePath)")
+            return
+        }
+        let imagesDirectory = documentsDirectory.appendingPathComponent("equipment_calibration")
+        try FileManager.default.createDirectory(at: imagesDirectory, withIntermediateDirectories: true)
+        let fileName = "\(job.jobId ?? UUID().uuidString)_calibration_\(slot).jpg"
+        let destinationURL = imagesDirectory.appendingPathComponent(fileName)
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            try FileManager.default.removeItem(at: destinationURL)
+        }
+        try FileManager.default.copyItem(at: finalURL, to: destinationURL)
+        if slot == 1 {
+            job.equipmentCalibrationImage1Path = fileName
+        } else {
+            job.equipmentCalibrationImage2Path = fileName
+        }
+        print("MYDEBUG → Successfully imported equipment calibration image \(slot): \(fileName)")
+    }
+    
+    private func importCustomHurricaneImage(from directory: URL, filePath: String, for job: Job) async throws {
+        var imageFilePath = filePath
+        if imageFilePath.hasPrefix("/") {
+            imageFilePath = String(imageFilePath.dropFirst())
+        }
+        var sourceURL: URL?
+        let directPath = directory.appendingPathComponent(imageFilePath)
+        if FileManager.default.fileExists(atPath: directPath.path) {
+            sourceURL = directPath
+        } else if imageFilePath.contains("images/") {
+            let pathWithImages = directory.appendingPathComponent(imageFilePath)
+            if FileManager.default.fileExists(atPath: pathWithImages.path) { sourceURL = pathWithImages }
+        }
+        if sourceURL == nil && imageFilePath.contains("images/") {
+            let privatePath = imageFilePath.replacingOccurrences(of: "images/", with: "privateimages/")
+            let pathWithPrivate = directory.appendingPathComponent(privatePath)
+            if FileManager.default.fileExists(atPath: pathWithPrivate.path) { sourceURL = pathWithPrivate }
+        }
+        if sourceURL == nil {
+            let filename = (imageFilePath as NSString).lastPathComponent
+            for dir in ["images", "privateimages"] {
+                let testPath = directory.appendingPathComponent(dir).appendingPathComponent(filename)
+                if FileManager.default.fileExists(atPath: testPath.path) {
+                    sourceURL = testPath
+                    break
+                }
+            }
+        }
+        guard let finalURL = sourceURL else {
+            print("⚠️ Custom hurricane image not found for: \(filePath)")
+            return
+        }
+        let imagesDirectory = documentsDirectory.appendingPathComponent("custom_hurricane_images")
+        try FileManager.default.createDirectory(at: imagesDirectory, withIntermediateDirectories: true)
+        let fileName = "\(job.jobId ?? UUID().uuidString)_custom_hurricane.jpg"
+        let destinationURL = imagesDirectory.appendingPathComponent(fileName)
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            try FileManager.default.removeItem(at: destinationURL)
+        }
+        try FileManager.default.copyItem(at: finalURL, to: destinationURL)
+        job.customHurricaneImagePath = fileName
+        print("✅ Successfully imported custom hurricane image: \(fileName)")
     }
     
     // MARK: - Photo Import (macOS: uses file system instead of Photos library)

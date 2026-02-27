@@ -35,6 +35,8 @@ struct EditJobView: View {
     
     @State private var showingImagePicker = false
     @State private var selectedImage: NSImage?
+    @State private var selectedCalibrationImage: NSImage?
+    @State private var showingCalibrationImagePicker = false
     @State private var showingAlert = false
     @State private var alertMessage = ""
     
@@ -140,6 +142,49 @@ struct EditJobView: View {
                         }
                     }
                 }
+                
+                Section("Equipment Calibration Photos") {
+                    if let currentImage = loadCurrentCalibrationImage() {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Current Image")
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                            Image(nsImage: currentImage)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(maxHeight: 150)
+                                .cornerRadius(8)
+                        }
+                    }
+                    
+                    Button(action: {
+                        showingCalibrationImagePicker = true
+                    }) {
+                        HStack {
+                            Image(systemName: "photo")
+                            if selectedCalibrationImage != nil {
+                                Text("New Image Selected")
+                                    .foregroundColor(.green)
+                            } else {
+                                Text(job.gaugeImagePath != nil ? "Replace Image" : "Add Calibration Photo")
+                                    .foregroundColor(.blue)
+                            }
+                        }
+                    }
+                    
+                    if let image = selectedCalibrationImage {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("New Image")
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                            Image(nsImage: image)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(maxHeight: 150)
+                                .cornerRadius(8)
+                        }
+                    }
+                }
             }
             .frame(minWidth: 800, idealWidth: 1000, maxWidth: .infinity, minHeight: 600, idealHeight: 800, maxHeight: .infinity)
             .formStyle(.grouped)
@@ -162,6 +207,13 @@ struct EditJobView: View {
                 allowsMultipleSelection: false
             ) { result in
                 handleImageSelection(result: result)
+            }
+            .fileImporter(
+                isPresented: $showingCalibrationImagePicker,
+                allowedContentTypes: [UTType.image],
+                allowsMultipleSelection: false
+            ) { result in
+                handleCalibrationImageSelection(result: result)
             }
             .alert("Job Updated", isPresented: $showingAlert) {
                 Button("OK") {
@@ -188,10 +240,32 @@ struct EditJobView: View {
         }
     }
     
+    private func handleCalibrationImageSelection(result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            guard url.startAccessingSecurityScopedResource() else { return }
+            defer { url.stopAccessingSecurityScopedResource() }
+            
+            if let image = NSImage(contentsOf: url) {
+                selectedCalibrationImage = image
+            }
+        case .failure:
+            break
+        }
+    }
+    
     private func loadCurrentOverheadImage() -> NSImage? {
         guard let imagePath = job.overheadImagePath else { return nil }
         let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let imageURL = documentsDirectory.appendingPathComponent("overhead_images").appendingPathComponent(imagePath)
+        return NSImage(contentsOf: imageURL)
+    }
+    
+    private func loadCurrentCalibrationImage() -> NSImage? {
+        guard let imagePath = job.gaugeImagePath else { return nil }
+        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let imageURL = documentsDirectory.appendingPathComponent("gauge_images").appendingPathComponent(imagePath)
         return NSImage(contentsOf: imageURL)
     }
     
@@ -218,6 +292,9 @@ struct EditJobView: View {
         
         if let image = selectedImage {
             saveOverheadImage(image, for: job)
+        }
+        if let image = selectedCalibrationImage {
+            saveCalibrationImage(image, for: job)
         }
         
         do {
@@ -250,6 +327,40 @@ struct EditJobView: View {
             job.overheadImageFetchedAt = Date()
         } catch {
             print("Failed to save overhead image: \(error.localizedDescription)")
+        }
+    }
+    
+    private func saveCalibrationImage(_ image: NSImage, for job: Job) {
+        if let oldImagePath = job.gaugeImagePath {
+            let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let oldImageURL = documentsDirectory.appendingPathComponent("gauge_images").appendingPathComponent(oldImagePath)
+            do {
+                if FileManager.default.fileExists(atPath: oldImageURL.path) {
+                    try FileManager.default.removeItem(at: oldImageURL)
+                    print("MYDEBUG → Removed old calibration image: \(oldImagePath)")
+                }
+            } catch {
+                print("MYDEBUG → Failed to remove old calibration image: \(error.localizedDescription)")
+            }
+        }
+        
+        guard let tiffData = image.tiffRepresentation,
+              let bitmapImage = NSBitmapImageRep(data: tiffData),
+              let imageData = bitmapImage.representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+            return
+        }
+        
+        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let imagesDirectory = documentsDirectory.appendingPathComponent("gauge_images")
+        
+        do {
+            try FileManager.default.createDirectory(at: imagesDirectory, withIntermediateDirectories: true)
+            let fileName = "\(job.jobId ?? UUID().uuidString)_gauge.jpg"
+            let fileURL = imagesDirectory.appendingPathComponent(fileName)
+            try imageData.write(to: fileURL)
+            job.gaugeImagePath = fileName
+        } catch {
+            print("MYDEBUG → Failed to save calibration image: \(error.localizedDescription)")
         }
     }
 }
