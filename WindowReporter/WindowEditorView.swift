@@ -29,6 +29,7 @@ struct WindowEditorView: View {
     @State private var selectedReasonType: String = "Inaccessible"
     @State private var customReason: String = ""
     @State private var showingReasonSelectionSheet = false
+    @State private var showingLocationMarker = false
     
     private let materialOptions = ["Aluminum", "Metal", "Vinyl", "Wood", "Unknown"]
     
@@ -155,6 +156,26 @@ struct WindowEditorView: View {
                             TextField("Height", text: $heightString)
                         }
                     }
+                }
+                
+                Section("Location") {
+                    Button(action: {
+                        showingLocationMarker = true
+                    }) {
+                        HStack {
+                            Image(systemName: (window.xPosition > 0 && window.yPosition > 0) ? "checkmark.square.fill" : "square")
+                                .foregroundColor((window.xPosition > 0 && window.yPosition > 0) ? .blue : .secondary)
+                                .font(.system(size: 20))
+                            Text((window.xPosition > 0 && window.yPosition > 0) ? "Location Marked" : "Mark Location on Overhead")
+                                .foregroundColor((window.xPosition > 0 && window.yPosition > 0) ? .primary : .secondary)
+                            Spacer()
+                            Image(systemName: "chevron.down")
+                                .foregroundColor(.secondary)
+                                .font(.caption)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .foregroundColor(.blue)
                 }
                 
                 Section("Test Results") {
@@ -340,6 +361,10 @@ struct WindowEditorView: View {
                         syncUntestedReasonFromSelection()
                     }
                 )
+            }
+            .sheet(isPresented: $showingLocationMarker) {
+                LocationMarkerView(window: window)
+                    .frame(minWidth: 500, minHeight: 500)
             }
         }
     }
