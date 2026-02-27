@@ -90,9 +90,3 @@ struct WindowReporterApp: App {
         }
     }
 }
-
-extension Notification.Name {
-    static let createNewJob = Notification.Name("createNewJob")
-    static let newJobCreated = Notification.Name("newJobCreated")
-    static let jobDataUpdated = Notification.Name("jobDataUpdated")
-}
