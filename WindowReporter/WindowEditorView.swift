@@ -18,7 +18,6 @@ struct WindowEditorView: View {
     @State private var windowType: String
     @State private var material: String
     @State private var testResult: String
-    @State private var leakPoints: Int16
     @State private var isInaccessible: Bool
     @State private var notes: String
     @State private var widthString: String
@@ -26,6 +25,10 @@ struct WindowEditorView: View {
     @State private var showingPhotoPicker: PhotoType?
     @State private var activePhotoGallery: PhotoType?
     @State private var activeLargePhotoGallery: PhotoType?
+    @State private var untestedReason: String?
+    @State private var selectedReasonType: String = "Inaccessible"
+    @State private var customReason: String = ""
+    @State private var showingReasonSelectionSheet = false
     
     private let materialOptions = ["Aluminum", "Metal", "Vinyl", "Wood", "Unknown"]
     
@@ -35,11 +38,47 @@ struct WindowEditorView: View {
         _windowType = State(initialValue: window.windowType ?? "")
         _material = State(initialValue: window.material ?? "Aluminum")
         _testResult = State(initialValue: window.testResult ?? "")
-        _leakPoints = State(initialValue: window.leakPoints)
         _isInaccessible = State(initialValue: window.isInaccessible)
         _notes = State(initialValue: window.notes ?? "")
         _widthString = State(initialValue: window.width > 0 ? String(format: "%.0f", window.width) : "")
         _heightString = State(initialValue: window.height > 0 ? String(format: "%.0f", window.height) : "")
+        
+        let existingReason = window.untestedReason
+        _untestedReason = State(initialValue: existingReason)
+        if let reason = existingReason {
+            if reason == "Inaccessible" {
+                _selectedReasonType = State(initialValue: "Inaccessible")
+            } else if reason == "Damaged so that it would not close properly." {
+                _selectedReasonType = State(initialValue: "Damaged so that it would not close properly.")
+            } else if reason == "Windows with air conditioning units installed cannot be tested, as the presence of the unit prevents proper sealing of the window assembly. This compromises the integrity of the test conditions, rendering the results invalid." {
+                _selectedReasonType = State(initialValue: "Windows with air conditioning units installed cannot be tested, as the presence of the unit prevents proper sealing of the window assembly. This compromises the integrity of the test conditions, rendering the results invalid.")
+            } else if reason == "Window was blocked by items that were not movable." {
+                _selectedReasonType = State(initialValue: "Window was blocked by items that were not movable.")
+            } else if reason == "Did not have access to window because of locked door." {
+                _selectedReasonType = State(initialValue: "Did not have access to window because of locked door.")
+            } else {
+                _selectedReasonType = State(initialValue: "Other/Custom")
+                _customReason = State(initialValue: reason)
+            }
+        } else {
+            _selectedReasonType = State(initialValue: "Inaccessible")
+        }
+    }
+    
+    private var displayReasonText: String {
+        if selectedReasonType == "Other/Custom" && !customReason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return customReason
+        }
+        return selectedReasonType
+    }
+    
+    private func syncUntestedReasonFromSelection() {
+        if selectedReasonType == "Other/Custom" {
+            let trimmed = customReason.trimmingCharacters(in: .whitespacesAndNewlines)
+            untestedReason = trimmed.isEmpty ? nil : trimmed
+        } else {
+            untestedReason = selectedReasonType
+        }
     }
     
     private var photos: [Photo] {
@@ -86,7 +125,12 @@ struct WindowEditorView: View {
                 Section("Window Details") {
                     TextField("Window Number", text: $windowNumber)
                     
-                    TextField("Window Type", text: $windowType)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Window Type")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        ReporterWindowTypePickerView(selectedWindowType: $windowType)
+                    }
                     
                     Picker("Material", selection: $material) {
                         ForEach(materialOptions, id: \.self) { option in
@@ -123,7 +167,32 @@ struct WindowEditorView: View {
                     
                     Toggle("Not Tested", isOn: $isInaccessible)
                     
-                    Stepper("Leak Points: \(leakPoints)", value: $leakPoints, in: 0...100)
+                    if isInaccessible {
+                        Button(action: {
+                            showingReasonSelectionSheet = true
+                        }) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Reason")
+                                        .font(.subheadline)
+                                        .foregroundColor(.secondary)
+                                    Text(displayReasonText)
+                                        .font(.body)
+                                        .foregroundColor(.primary)
+                                        .multilineTextAlignment(.leading)
+                                        .lineLimit(2)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .foregroundColor(.secondary)
+                                    .font(.caption)
+                            }
+                            .padding()
+                            .background(Color(NSColor.controlBackgroundColor))
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
                 }
                 
                 Section("Notes") {
@@ -262,6 +331,16 @@ struct WindowEditorView: View {
                 PhotoLargeGalleryView(window: window, photoType: photoType)
                     .frame(width: 800, height: 600)
             }
+            .sheet(isPresented: $showingReasonSelectionSheet) {
+                UntestedReasonSelectionView(
+                    selectedReason: $selectedReasonType,
+                    customReason: $customReason,
+                    onDismiss: {
+                        showingReasonSelectionSheet = false
+                        syncUntestedReasonFromSelection()
+                    }
+                )
+            }
         }
     }
     
@@ -270,8 +349,9 @@ struct WindowEditorView: View {
         window.windowType = windowType.isEmpty ? nil : windowType
         window.material = material
         window.testResult = testResult.isEmpty ? nil : testResult
-        window.leakPoints = leakPoints
         window.isInaccessible = isInaccessible
+        let reasonToSave: String? = isInaccessible ? (untestedReason ?? (selectedReasonType == "Other/Custom" ? nil : selectedReasonType)) : nil
+        window.untestedReason = reasonToSave
         window.notes = notes.isEmpty ? nil : notes
         
         if let width = Double(widthString) {
