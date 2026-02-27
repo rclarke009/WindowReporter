@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A978FE1A2F5141120050C6E1 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = A97DF7A12ECD42E4009A20DD /* ZIPFoundation */; };
 		A97DF79F2ECD42E4009A20DD /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = A97DF7A12ECD42E4009A20DD /* ZIPFoundation */; };
 /* End PBXBuildFile section */
 
@@ -54,6 +55,7 @@
 		A978FE212F51412E0050C6E1 /* Exceptions for "WindowReporter" folder in "BetaWindowReporter" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				AppNotifications.swift,
 				AddressCleaningUtility.swift,
 				Assets.xcassets,
 				BaseTemplateWithImage.docx,
@@ -69,6 +71,18 @@
 				images/TrueLogoDark.png,
 				images/TrueLogoEmailLight.jpg,
 				ImportJobsView.swift,
+				JobDetailView.swift,
+				JobImportService.swift,
+				JobStatus.swift,
+				LocationMarkerView.swift,
+				macOSPhotoImportService.swift,
+				macOSPhotoPicker.swift,
+				Persistence.swift,
+				PhotoGalleryView.swift,
+				PhotoLargeGalleryView.swift,
+				PhotoNoteCategories.swift,
+				SettingsView.swift,
+				UntestedReasonSelectionView.swift,
 				"window-types/window-awning.png",
 				"window-types/window-casement.png",
 				"window-types/window-center-pivot.png",
@@ -78,6 +92,9 @@
 				"window-types/window-jalousie.png",
 				"window-types/window-singlehung.png",
 				"window-types/window-sliding.png",
+				WindowEditorView.swift,
+				WindowReporter.xcdatamodeld,
+				WindowTypePicker.swift,
 			);
 			target = A978FDED2F5141110050C6E1 /* BetaWindowReporter */;
 		};
@@ -124,6 +141,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A978FE1A2F5141120050C6E1 /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -212,6 +230,7 @@
 			);
 			name = BetaWindowReporter;
 			packageProductDependencies = (
+				A97DF7A12ECD42E4009A20DD /* ZIPFoundation */,
 			);
 			productName = BetaWindowReporter;
 			productReference = A978FDEE2F5141110050C6E1 /* BetaWindowReporter.app */;
@@ -521,6 +540,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = BetaWindowReporter;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -553,6 +573,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = BetaWindowReporter;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
