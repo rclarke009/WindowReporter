@@ -30,6 +30,8 @@ struct WindowEditorView: View {
     @State private var customReason: String = ""
     @State private var showingReasonSelectionSheet = false
     @State private var showingLocationMarker = false
+    /// Photo Thumbnails section: expanded by default for quick-glance gallery (exterior, interior, leak).
+    @State private var expandedPhotoThumbnailTypes: Set<PhotoType> = [.exterior, .interior, .leak]
     
     private let materialOptions = ["Aluminum", "Metal", "Vinyl", "Wood", "Unknown"]
     
@@ -80,6 +82,13 @@ struct WindowEditorView: View {
         } else {
             untestedReason = selectedReasonType
         }
+    }
+    
+    private func expandedBinding(for photoType: PhotoType) -> Binding<Bool> {
+        Binding(
+            get: { expandedPhotoThumbnailTypes.contains(photoType) },
+            set: { if $0 { expandedPhotoThumbnailTypes.insert(photoType) } else { expandedPhotoThumbnailTypes.remove(photoType) } }
+        )
     }
     
     private var photos: [Photo] {
@@ -276,11 +285,11 @@ struct WindowEditorView: View {
                 }
                 
                 Section("Photo Thumbnails") {
-                    // Photo galleries by type (thumbnail preview)
+                    // Photo galleries by type (thumbnail preview); expanded by default for quick-glance gallery
                     ForEach([PhotoType.exterior, PhotoType.interior, PhotoType.leak], id: \.self) { photoType in
                         let typePhotos = photos(for: photoType)
                         if !typePhotos.isEmpty {
-                            DisclosureGroup("\(photoType.rawValue.capitalized) Photos (\(typePhotos.count))") {
+                            DisclosureGroup(isExpanded: expandedBinding(for: photoType)) {
                                 ScrollView(.horizontal, showsIndicators: true) {
                                     HStack(spacing: 12) {
                                         ForEach(typePhotos, id: \.objectID) { photo in
@@ -289,6 +298,8 @@ struct WindowEditorView: View {
                                     }
                                     .padding()
                                 }
+                            } label: {
+                                Text("\(photoType.rawValue.capitalized) Photos (\(typePhotos.count))")
                             }
                         }
                     }

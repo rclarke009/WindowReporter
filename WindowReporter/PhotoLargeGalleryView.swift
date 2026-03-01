@@ -89,6 +89,12 @@ struct PhotoLargeGalleryView: View {
             .onAppear {
                 refreshPhotos()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .newJobCreated)) { note in
+                guard let importedJob = note.object as? Job, let windowJob = window.job else { return }
+                if importedJob.objectID == windowJob.objectID {
+                    refreshPhotos()
+                }
+            }
         }
     }
     
@@ -166,6 +172,22 @@ struct PhotoLargeItemView: View {
         return .exterior
     }
     
+    private var rotationDegrees: Double {
+        photo.rotationDegrees ?? 0
+    }
+    
+    private func rotatePhoto(by delta: Double) {
+        var next = (rotationDegrees + delta).truncatingRemainder(dividingBy: 360)
+        if next < 0 { next += 360 }
+        photo.rotationDegrees = next
+        do {
+            try viewContext.save()
+            print("MYDEBUG → Photo rotation saved: \(next)°")
+        } catch {
+            print("MYDEBUG → Failed to save rotation: \(error.localizedDescription)")
+        }
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Photo image with delete button overlay
@@ -179,6 +201,7 @@ struct PhotoLargeItemView: View {
                                 .resizable()
                                 .aspectRatio(contentMode: .fit)
                                 .frame(maxWidth: 700)
+                                .rotationEffect(.degrees(rotationDegrees))
                         } else if isLoading {
                             RoundedRectangle(cornerRadius: 12)
                                 .fill(Color.gray.opacity(0.3))
@@ -220,6 +243,24 @@ struct PhotoLargeItemView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 .padding(8)
+                
+                // Rotate buttons (bottom-left)
+                if image != nil {
+                    HStack(spacing: 8) {
+                        Button(action: { rotatePhoto(by: -90) }) {
+                            Image(systemName: "rotate.left")
+                                .font(.system(size: 18))
+                        }
+                        .buttonStyle(.bordered)
+                        Button(action: { rotatePhoto(by: 90) }) {
+                            Image(systemName: "rotate.right")
+                                .font(.system(size: 18))
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                }
             }
             
             // Date/time stamp

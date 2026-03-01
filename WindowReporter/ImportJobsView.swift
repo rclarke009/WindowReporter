@@ -8,6 +8,56 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+private struct DuplicateResolutionSheetItem: Identifiable {
+    let id = UUID()
+    let addressSummary: String
+}
+
+private struct DuplicateResolutionSheet: View {
+    let addressSummary: String
+    let onReplace: () -> Void
+    let onSkip: () -> Void
+    let onImportAsNew: () -> Void
+    
+    var body: some View {
+        VStack(spacing: 24) {
+            Text("Job Already Exists")
+                .font(.title2)
+                .fontWeight(.semibold)
+            Text("A job with this address is already in the app. Choose how to proceed.")
+                .font(.body)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(addressSummary)
+                .font(.subheadline)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(.controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            VStack(spacing: 12) {
+                Button("Replace existing job") {
+                    onReplace()
+                }
+                .buttonStyle(.borderedProminent)
+                .frame(maxWidth: .infinity)
+                Button("Import as new job") {
+                    onImportAsNew()
+                }
+                .frame(maxWidth: .infinity)
+                Button("Skip") {
+                    onSkip()
+                }
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity)
+            }
+            .padding(.top, 8)
+        }
+        .padding(32)
+        .frame(width: 400)
+    }
+}
+
 struct ImportJobsView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
@@ -114,6 +164,41 @@ struct ImportJobsView: View {
                 }
             }
         }
+        .sheet(item: Binding<DuplicateResolutionSheetItem?>(
+            get: {
+                guard let pending = importService.pendingDuplicateResolution else { return nil }
+                let j = pending.package.job
+                let parts = [j.addressLine1, j.city, j.state, j.zip].compactMap { $0 }
+                let summary = parts.isEmpty ? "Same job (by ID)" : parts.joined(separator: ", ")
+                return DuplicateResolutionSheetItem(addressSummary: summary)
+            },
+            set: { _, _ in }
+        )) { (item: DuplicateResolutionSheetItem) in
+            DuplicateResolutionSheet(
+                addressSummary: item.addressSummary,
+                onReplace: {
+                    Task {
+                        await importService.resolveDuplicate(choice: .replace)
+                        if importService.importError == nil {
+                            await MainActor.run { dismiss() }
+                        }
+                    }
+                },
+                onSkip: {
+                    Task {
+                        await importService.resolveDuplicate(choice: .skip)
+                    }
+                },
+                onImportAsNew: {
+                    Task {
+                        await importService.resolveDuplicate(choice: .importAsNew)
+                        if importService.importError == nil {
+                            await MainActor.run { dismiss() }
+                        }
+                    }
+                }
+            )
+        }
         .fileImporter(
             isPresented: $showingDocumentPicker,
             allowedContentTypes: [.zip, .folder],
@@ -129,7 +214,7 @@ struct ImportJobsView: View {
             guard let url = urls.first else { return }
             Task {
                 await importService.importJobPackage(from: url)
-                if !importService.isImporting && importService.importError == nil {
+                if !importService.isImporting && importService.importError == nil && importService.pendingDuplicateResolution == nil {
                     await MainActor.run {
                         dismiss()
                     }

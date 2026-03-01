@@ -340,15 +340,47 @@ struct PhotoNoteSelectionView: View {
         .frame(width: 600, height: 700)
     }
     
+    private var photoRotationDegrees: Double {
+        photo.rotationDegrees ?? 0
+    }
+    
+    private func rotatePhoto(by delta: Double) {
+        var next = (photoRotationDegrees + delta).truncatingRemainder(dividingBy: 360)
+        if next < 0 { next += 360 }
+        photo.rotationDegrees = next
+        do {
+            try viewContext.save()
+            print("MYDEBUG → Photo rotation saved in note view: \(next)°")
+        } catch {
+            print("MYDEBUG → Failed to save rotation: \(error.localizedDescription)")
+        }
+    }
+    
     private var photoPreviewView: some View {
         VStack(spacing: 8) {
             if let image = photoImage {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxHeight: 300)
-                    .cornerRadius(8)
-                    .shadow(radius: 2)
+                ZStack(alignment: .bottomLeading) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxHeight: 300)
+                        .cornerRadius(8)
+                        .shadow(radius: 2)
+                        .rotationEffect(.degrees(photoRotationDegrees))
+                    HStack(spacing: 8) {
+                        Button(action: { rotatePhoto(by: -90) }) {
+                            Image(systemName: "rotate.left")
+                                .font(.system(size: 16))
+                        }
+                        .buttonStyle(.bordered)
+                        Button(action: { rotatePhoto(by: 90) }) {
+                            Image(systemName: "rotate.right")
+                                .font(.system(size: 16))
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(6)
+                }
             } else if isLoadingPhoto {
                 VStack(spacing: 8) {
                     ProgressView()
