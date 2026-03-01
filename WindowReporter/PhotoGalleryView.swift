@@ -101,6 +101,12 @@ struct PhotoGalleryView: View {
             .onAppear {
                 refreshPhotos()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .newJobCreated)) { note in
+                guard let importedJob = note.object as? Job, let windowJob = window.job else { return }
+                if importedJob.objectID == windowJob.objectID {
+                    refreshPhotos()
+                }
+            }
         }
     }
     
@@ -179,6 +185,7 @@ struct PhotoGalleryThumbnailView: View {
                         .frame(width: 200, height: 200)
                         .clipped()
                         .cornerRadius(8)
+                        .rotationEffect(.degrees(photo.rotationDegrees ?? 0))
                 } else if isLoading {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(Color.gray.opacity(0.3))

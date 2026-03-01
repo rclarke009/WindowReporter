@@ -2511,13 +2511,15 @@ struct FieldResultsPackage {
             }
             
             let imageRectBottomUp = CGRect(x: x, y: pageRect.height - photoYFromTop - photoSize, width: photoSize, height: photoSize)
+            let rotationDegrees = CGFloat(photoData.photo.rotationDegrees ?? 0)
+            let rotationRadians = rotationDegrees * .pi / 180
             let zoomScale = CGFloat(1.0)
             let panX = CGFloat(0)
             let panY = CGFloat(0)
             let hasZoomPan = abs(zoomScale - 1.0) > 0.001 || abs(panX) > 0.5 || abs(panY) > 0.5
             
             var photoTransform: (pixelWidth: CGFloat, pixelHeight: CGFloat, scale: CGFloat, clampedPanX: CGFloat, clampedPanY: CGFloat)?
-            if hasZoomPan, let cgImage = processedImage.cgImage(forProposedRect: nil, context: nil, hints: nil) ?? processedImage.tiffRepresentation.flatMap({ NSBitmapImageRep(data: $0) })?.cgImage {
+            if let cgImage = processedImage.cgImage(forProposedRect: nil, context: nil, hints: nil) ?? processedImage.tiffRepresentation.flatMap({ NSBitmapImageRep(data: $0) })?.cgImage {
                 let pixelWidth = CGFloat(cgImage.width)
                 let pixelHeight = CGFloat(cgImage.height)
                 let maxSide = photoSize
@@ -2527,16 +2529,23 @@ struct FieldResultsPackage {
                 let fitScale = overheadFitScaleForExport(
                     imageSize: imageFitSize,
                     scale: zoomScale,
-                    rotation: 0,
+                    rotation: Double(rotationDegrees),
                     containerSize: CGSize(width: maxSide, height: maxSide)
                 )
                 let scale = (imageFitSize.width / pixelWidth) * zoomScale * fitScale
-                let maxPanX = max(0, (pixelWidth * scale - maxSide) / 2 / scale)
-                let maxPanY = max(0, (pixelHeight * scale - maxSide) / 2 / scale)
-                let clampedPanX = min(maxPanX, max(-maxPanX, panX))
-                let clampedPanY = min(maxPanY, max(-maxPanY, panY))
+                let clampedPanX: CGFloat
+                let clampedPanY: CGFloat
+                if hasZoomPan {
+                    let maxPanX = max(0, (pixelWidth * scale - maxSide) / 2 / scale)
+                    let maxPanY = max(0, (pixelHeight * scale - maxSide) / 2 / scale)
+                    clampedPanX = min(maxPanX, max(-maxPanX, panX))
+                    clampedPanY = min(maxPanY, max(-maxPanY, panY))
+                } else {
+                    clampedPanX = 0
+                    clampedPanY = 0
+                }
                 photoTransform = (pixelWidth, pixelHeight, scale, clampedPanX, clampedPanY)
-                drawTransformedImage(cgImage: cgImage, in: imageRectBottomUp, context: context, scale: scale, panX: clampedPanX, panY: clampedPanY, rotation: 0)
+                drawTransformedImage(cgImage: cgImage, in: imageRectBottomUp, context: context, scale: scale, panX: clampedPanX, panY: clampedPanY, rotation: rotationRadians)
             } else {
                 drawNSImageAspectFit(processedImage, in: imageRectBottomUp, context: context)
             }
@@ -2548,7 +2557,7 @@ struct FieldResultsPackage {
                 let pdfArrowX: CGFloat
                 let pdfArrowY: CGFloat
                 if let t = photoTransform {
-                    let pt = transformImagePointToRect(dx: CGFloat(arrowX), dy: t.pixelHeight - CGFloat(arrowY), imageWidth: t.pixelWidth, imageHeight: t.pixelHeight, rect: imageRectBottomUp, scale: t.scale, panX: t.clampedPanX, panY: t.clampedPanY, rotation: 0)
+                    let pt = transformImagePointToRect(dx: CGFloat(arrowX), dy: t.pixelHeight - CGFloat(arrowY), imageWidth: t.pixelWidth, imageHeight: t.pixelHeight, rect: imageRectBottomUp, scale: t.scale, panX: t.clampedPanX, panY: t.clampedPanY, rotation: rotationRadians)
                     pdfArrowX = pt.x
                     pdfArrowY = pt.y
                 } else {
@@ -3757,6 +3766,7 @@ class FullJobPackageExporter {
                     arrowXPosition: photo.arrowXPosition,
                     arrowYPosition: photo.arrowYPosition,
                     arrowDirection: photo.arrowDirection,
+                    rotationDegrees: photo.rotationDegrees,
                     includeInReport: photo.includeInReport,
                     createdAt: photo.createdAt?.timeIntervalSince1970
                 )

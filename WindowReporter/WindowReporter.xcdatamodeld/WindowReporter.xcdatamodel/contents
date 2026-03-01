@@ -77,6 +77,7 @@
         <attribute name="arrowXPosition" optional="YES" attributeType="Double" usesScalarValueType="YES"/>
         <attribute name="arrowYPosition" optional="YES" attributeType="Double" usesScalarValueType="YES"/>
         <attribute name="arrowDirection" optional="YES" attributeType="String"/>
+        <attribute name="rotationDegrees" optional="YES" attributeType="Double" defaultValueString="0.0" usesScalarValueType="YES"/>
         <attribute name="includeInReport" optional="NO" attributeType="Boolean" defaultValueString="YES" usesScalarValueType="YES"/>
         <relationship name="window" optional="NO" maxCount="1" deletionRule="Nullify" destinationEntity="Window" inverseName="photos" inverseEntity="Window"/>
     </entity>

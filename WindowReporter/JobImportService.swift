@@ -130,6 +130,7 @@ struct FullJobPackage: Codable {
         let arrowXPosition: Double?
         let arrowYPosition: Double?
         let arrowDirection: String?
+        let rotationDegrees: Double?
         let includeInReport: Bool
         let createdAt: Double?
     }
@@ -142,6 +143,7 @@ class JobImportService: ObservableObject {
     @Published var importError: String?
     @Published var importProgress: Double = 0.0
     @Published var importedJobs: [Job] = []
+    @Published var importRefreshId = UUID()
     @Published var detectedPackageType: PackageType? = nil
     
     enum PackageType: String {
@@ -167,6 +169,21 @@ class JobImportService: ObservableObject {
         }
     }
     
+    enum DuplicateResolution {
+        case replace
+        case skip
+        case importAsNew
+    }
+    
+    struct PendingDuplicateResolution {
+        let package: FullJobPackage
+        let directory: URL
+        let existingJob: Job
+        let isTempDirectory: Bool
+    }
+    
+    @Published var pendingDuplicateResolution: PendingDuplicateResolution?
+    
     private let context: NSManagedObjectContext
     private let documentsDirectory: URL
     private let photoImportService: macOSPhotoImportService
@@ -183,6 +200,7 @@ class JobImportService: ObservableObject {
             importError = nil
             importProgress = 0.0
             detectedPackageType = nil
+            pendingDuplicateResolution = nil
         }
         
         do {
@@ -193,12 +211,11 @@ class JobImportService: ObservableObject {
             
             var tempDirectory: URL
             
+            var isTempDirectory = false
             if url.pathExtension.lowercased() == "zip" {
                 tempDirectory = documentsDirectory.appendingPathComponent("temp_import_\(UUID().uuidString)")
                 try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
-                defer {
-                    try? FileManager.default.removeItem(at: tempDirectory)
-                }
+                isTempDirectory = true
                 
                 await MainActor.run { importProgress = 0.1 }
                 try await extractZIP(from: url, to: tempDirectory)
@@ -244,12 +261,19 @@ class JobImportService: ObservableObject {
                     detectedPackageType = .fullJob
                     importProgress = 0.3
                 }
-                let importedJob = try await importFullJobPackage(from: tempDirectory)
-                await MainActor.run {
-                    importProgress = 1.0
-                    isImporting = false
-                    self.importedJobs = [importedJob]
-                    NotificationCenter.default.post(name: .newJobCreated, object: importedJob)
+                if let importedJob = try await importFullJobPackage(from: tempDirectory, isTempDirectory: isTempDirectory) {
+                    if isTempDirectory {
+                        try? FileManager.default.removeItem(at: tempDirectory)
+                    }
+                    await MainActor.run {
+                        importProgress = 1.0
+                        isImporting = false
+                        self.importedJobs = [importedJob]
+                        importRefreshId = UUID()
+                        NotificationCenter.default.post(name: .newJobCreated, object: importedJob)
+                    }
+                } else {
+                    await MainActor.run { isImporting = false }
                 }
             } else if FileManager.default.fileExists(atPath: jobsJSONURL.path) {
                 await MainActor.run {
@@ -263,6 +287,7 @@ class JobImportService: ObservableObject {
                     importProgress = 1.0
                     isImporting = false
                     self.importedJobs = importedJobs
+                    importRefreshId = UUID()
                     if let firstJob = importedJobs.first {
                         NotificationCenter.default.post(name: .newJobCreated, object: firstJob)
                     }
@@ -466,7 +491,7 @@ class JobImportService: ObservableObject {
     
     // MARK: - Full Job Package Import
     
-    private func importFullJobPackage(from directory: URL) async throws -> Job {
+    private func importFullJobPackage(from directory: URL, isTempDirectory: Bool = false) async throws -> Job? {
         // Check for JSON file with or without "private" prefix (like iPad version)
         // Check for JSON file (with or without iOS "private" prefix)
         var packageURL = directory.appendingPathComponent("full-job-package.json")
@@ -507,75 +532,57 @@ class JobImportService: ObservableObject {
         fetchRequest.fetchLimit = 1
         
         let existingJobs = try context.fetch(fetchRequest)
-        let job: Job
         
         if let existingJob = existingJobs.first {
-            job = existingJob
-            // Update job properties
-            if let clientName = package.job.clientName { job.clientName = clientName }
-            if let addressLine1 = package.job.addressLine1 { job.addressLine1 = addressLine1 }
-            if let cleanedAddressLine1 = package.job.cleanedAddressLine1 { job.cleanedAddressLine1 = cleanedAddressLine1 }
-            if let city = package.job.city { job.city = city }
-            if let state = package.job.state { job.state = state }
-            if let zip = package.job.zip { job.zip = zip }
-            if let notes = package.job.notes { job.notes = notes }
-            if let phoneNumber = package.job.phoneNumber { job.phoneNumber = phoneNumber }
-            if let areasOfConcern = package.job.areasOfConcern { job.areasOfConcern = areasOfConcern }
-            if let status = package.job.status { job.status = status }
-            if let testProcedure = package.job.testProcedure { job.testProcedure = testProcedure }
-            if let waterPressure = package.job.waterPressure { job.waterPressure = waterPressure }
-            if let inspectorName = package.job.inspectorName { job.inspectorName = inspectorName }
-            if let inspectionDate = package.job.inspectionDate { job.inspectionDate = Date(timeIntervalSince1970: inspectionDate) }
-            if let temperature = package.job.temperature { job.temperature = temperature }
-            if let weatherCondition = package.job.weatherCondition { job.weatherCondition = weatherCondition }
-            if let humidity = package.job.humidity { job.humidity = humidity }
-            if let windSpeed = package.job.windSpeed { job.windSpeed = windSpeed }
-            if let weatherFetchedAt = package.job.weatherFetchedAt { job.weatherFetchedAt = Date(timeIntervalSince1970: weatherFetchedAt) }
-            if let internalNotes = package.job.internalNotes { job.internalNotes = internalNotes }
-            if let conclusionComment = package.job.conclusionComment { job.conclusionComment = conclusionComment }
-            if let interiorFinishes = package.job.interiorFinishes { job.interiorFinishes = interiorFinishes }
-            if let exteriorFinishes = package.job.exteriorFinishes { job.exteriorFinishes = exteriorFinishes }
-            if let jobStatus = package.job.jobStatus { job.jobStatus = jobStatus }
-            if let reportDeliveredAt = package.job.reportDeliveredAt { job.reportDeliveredAt = Date(timeIntervalSince1970: reportDeliveredAt) }
-            if let backedUpToArchiveAt = package.job.backedUpToArchiveAt { job.backedUpToArchiveAt = Date(timeIntervalSince1970: backedUpToArchiveAt) }
-            if let includeEngineeringLetter = package.job.includeEngineeringLetter { job.includeEngineeringLetter = includeEngineeringLetter }
-            if let customWeatherText = package.job.customWeatherText { job.customWeatherText = customWeatherText }
-            job.updatedAt = Date()
-        } else {
-            job = Job(context: context)
-            job.jobId = package.job.jobId
-            job.clientName = package.job.clientName
-            job.addressLine1 = package.job.addressLine1
-            job.cleanedAddressLine1 = package.job.cleanedAddressLine1 ?? AddressCleaningUtility.cleanAddress(package.job.addressLine1 ?? "")
-            job.city = package.job.city
-            job.state = package.job.state
-            job.zip = package.job.zip
-            job.notes = package.job.notes
-            job.phoneNumber = package.job.phoneNumber
-            job.areasOfConcern = package.job.areasOfConcern
-            job.status = package.job.status ?? "Ready"
-            job.testProcedure = package.job.testProcedure ?? "ASTM E1105"
-            job.waterPressure = package.job.waterPressure ?? 12.0
-            job.inspectorName = package.job.inspectorName
-            job.inspectionDate = package.job.inspectionDate.map { Date(timeIntervalSince1970: $0) }
-            job.temperature = package.job.temperature ?? 0.0
-            job.weatherCondition = package.job.weatherCondition
-            job.humidity = package.job.humidity ?? 0.0
-            job.windSpeed = package.job.windSpeed ?? 0.0
-            job.createdAt = package.job.createdAt.map { Date(timeIntervalSince1970: $0) } ?? Date()
-            job.updatedAt = Date()
-            job.weatherFetchedAt = package.job.weatherFetchedAt.map { Date(timeIntervalSince1970: $0) }
-            job.internalNotes = package.job.internalNotes
-            job.conclusionComment = package.job.conclusionComment
-            job.interiorFinishes = package.job.interiorFinishes
-            job.exteriorFinishes = package.job.exteriorFinishes
-            job.jobStatus = package.job.jobStatus
-            job.reportDeliveredAt = package.job.reportDeliveredAt.map { Date(timeIntervalSince1970: $0) }
-            job.backedUpToArchiveAt = package.job.backedUpToArchiveAt.map { Date(timeIntervalSince1970: $0) }
-            job.includeEngineeringLetter = package.job.includeEngineeringLetter ?? false
-            job.customWeatherText = package.job.customWeatherText
+            await MainActor.run {
+                pendingDuplicateResolution = PendingDuplicateResolution(
+                    package: package,
+                    directory: directory,
+                    existingJob: existingJob,
+                    isTempDirectory: isTempDirectory
+                )
+            }
+            return nil
         }
         
+        let job = Job(context: context)
+        job.jobId = package.job.jobId
+        job.clientName = package.job.clientName
+        job.addressLine1 = package.job.addressLine1
+        job.cleanedAddressLine1 = package.job.cleanedAddressLine1 ?? AddressCleaningUtility.cleanAddress(package.job.addressLine1 ?? "")
+        job.city = package.job.city
+        job.state = package.job.state
+        job.zip = package.job.zip
+        job.notes = package.job.notes
+        job.phoneNumber = package.job.phoneNumber
+        job.areasOfConcern = package.job.areasOfConcern
+        job.status = package.job.status ?? "Ready"
+        job.testProcedure = package.job.testProcedure ?? "ASTM E1105"
+        job.waterPressure = package.job.waterPressure ?? 12.0
+        job.inspectorName = package.job.inspectorName
+        job.inspectionDate = package.job.inspectionDate.map { Date(timeIntervalSince1970: $0) }
+        job.temperature = package.job.temperature ?? 0.0
+        job.weatherCondition = package.job.weatherCondition
+        job.humidity = package.job.humidity ?? 0.0
+        job.windSpeed = package.job.windSpeed ?? 0.0
+        job.createdAt = package.job.createdAt.map { Date(timeIntervalSince1970: $0) } ?? Date()
+        job.updatedAt = Date()
+        job.weatherFetchedAt = package.job.weatherFetchedAt.map { Date(timeIntervalSince1970: $0) }
+        job.internalNotes = package.job.internalNotes
+        job.conclusionComment = package.job.conclusionComment
+        job.interiorFinishes = package.job.interiorFinishes
+        job.exteriorFinishes = package.job.exteriorFinishes
+        job.jobStatus = package.job.jobStatus
+        job.reportDeliveredAt = package.job.reportDeliveredAt.map { Date(timeIntervalSince1970: $0) }
+        job.backedUpToArchiveAt = package.job.backedUpToArchiveAt.map { Date(timeIntervalSince1970: $0) }
+        job.includeEngineeringLetter = package.job.includeEngineeringLetter ?? false
+        job.customWeatherText = package.job.customWeatherText
+        
+        try await applyFullJobPackage(package, from: directory, to: job)
+        return job
+    }
+    
+    private func applyFullJobPackage(_ package: FullJobPackage, from directory: URL, to job: Job) async throws {
         await MainActor.run { importProgress = 0.5 }
         
         if let overheadFile = package.job.overheadImageFile {
@@ -648,6 +655,12 @@ class JobImportService: ObservableObject {
                 window.testStartTime = windowData.testStartTime.map { Date(timeIntervalSince1970: $0) }
                 window.testStopTime = windowData.testStopTime.map { Date(timeIntervalSince1970: $0) }
                 window.updatedAt = Date()
+                // Replace path: remove existing photos so imported package photos don't duplicate
+                if let existingPhotos = window.photos?.allObjects as? [Photo] {
+                    for photo in existingPhotos {
+                        context.delete(photo)
+                    }
+                }
             } else {
                 window = Window(context: context)
                 window.windowId = windowData.windowId
@@ -722,8 +735,138 @@ class JobImportService: ObservableObject {
                 print("MYDEBUG →   Window \(window.windowNumber ?? "?") final photo count: \(photoCount)")
             }
         }
+    }
+    
+    func resolveDuplicate(choice: DuplicateResolution) async {
+        guard let pending = pendingDuplicateResolution else { return }
         
-        return job
+        switch choice {
+        case .skip:
+            if pending.isTempDirectory {
+                try? FileManager.default.removeItem(at: pending.directory)
+            }
+            await MainActor.run {
+                pendingDuplicateResolution = nil
+                isImporting = false
+            }
+            
+        case .replace:
+            let job = pending.existingJob
+            let p = pending.package.job
+            if let v = p.clientName { job.clientName = v }
+            if let v = p.addressLine1 { job.addressLine1 = v }
+            if let v = p.cleanedAddressLine1 { job.cleanedAddressLine1 = v }
+            if let v = p.city { job.city = v }
+            if let v = p.state { job.state = v }
+            if let v = p.zip { job.zip = v }
+            if let v = p.notes { job.notes = v }
+            if let v = p.phoneNumber { job.phoneNumber = v }
+            if let v = p.areasOfConcern { job.areasOfConcern = v }
+            if let v = p.status { job.status = v }
+            if let v = p.testProcedure { job.testProcedure = v }
+            if let v = p.waterPressure { job.waterPressure = v }
+            if let v = p.inspectorName { job.inspectorName = v }
+            if let v = p.inspectionDate { job.inspectionDate = Date(timeIntervalSince1970: v) }
+            if let v = p.temperature { job.temperature = v }
+            if let v = p.weatherCondition { job.weatherCondition = v }
+            if let v = p.humidity { job.humidity = v }
+            if let v = p.windSpeed { job.windSpeed = v }
+            if let v = p.weatherFetchedAt { job.weatherFetchedAt = Date(timeIntervalSince1970: v) }
+            if let v = p.internalNotes { job.internalNotes = v }
+            if let v = p.conclusionComment { job.conclusionComment = v }
+            if let v = p.interiorFinishes { job.interiorFinishes = v }
+            if let v = p.exteriorFinishes { job.exteriorFinishes = v }
+            if let v = p.jobStatus { job.jobStatus = v }
+            if let v = p.reportDeliveredAt { job.reportDeliveredAt = Date(timeIntervalSince1970: v) }
+            if let v = p.backedUpToArchiveAt { job.backedUpToArchiveAt = Date(timeIntervalSince1970: v) }
+            if let v = p.includeEngineeringLetter { job.includeEngineeringLetter = v }
+            if let v = p.customWeatherText { job.customWeatherText = v }
+            job.updatedAt = Date()
+            
+            let didStartAccess = !pending.isTempDirectory && pending.directory.startAccessingSecurityScopedResource()
+            defer { if didStartAccess { pending.directory.stopAccessingSecurityScopedResource() } }
+            
+            do {
+                try await applyFullJobPackage(pending.package, from: pending.directory, to: job)
+                if pending.isTempDirectory {
+                    try? FileManager.default.removeItem(at: pending.directory)
+                }
+                await MainActor.run {
+                    pendingDuplicateResolution = nil
+                    importProgress = 1.0
+                    isImporting = false
+                    importedJobs = [job]
+                    importRefreshId = UUID()
+                    NotificationCenter.default.post(name: .newJobCreated, object: job)
+                }
+            } catch {
+                await MainActor.run {
+                    importError = error.localizedDescription
+                    pendingDuplicateResolution = nil
+                    isImporting = false
+                }
+            }
+            
+        case .importAsNew:
+            let newJobId = pending.package.job.jobId + "-" + UUID().uuidString
+            let newJob = Job(context: context)
+            let p = pending.package.job
+            newJob.jobId = newJobId
+            newJob.clientName = p.clientName
+            newJob.addressLine1 = p.addressLine1
+            newJob.cleanedAddressLine1 = p.cleanedAddressLine1 ?? AddressCleaningUtility.cleanAddress(p.addressLine1 ?? "")
+            newJob.city = p.city
+            newJob.state = p.state
+            newJob.zip = p.zip
+            newJob.notes = p.notes
+            newJob.phoneNumber = p.phoneNumber
+            newJob.areasOfConcern = p.areasOfConcern
+            newJob.status = p.status ?? "Ready"
+            newJob.testProcedure = p.testProcedure ?? "ASTM E1105"
+            newJob.waterPressure = p.waterPressure ?? 12.0
+            newJob.inspectorName = p.inspectorName
+            newJob.inspectionDate = p.inspectionDate.map { Date(timeIntervalSince1970: $0) }
+            newJob.temperature = p.temperature ?? 0.0
+            newJob.weatherCondition = p.weatherCondition
+            newJob.humidity = p.humidity ?? 0.0
+            newJob.windSpeed = p.windSpeed ?? 0.0
+            newJob.createdAt = p.createdAt.map { Date(timeIntervalSince1970: $0) } ?? Date()
+            newJob.updatedAt = Date()
+            newJob.weatherFetchedAt = p.weatherFetchedAt.map { Date(timeIntervalSince1970: $0) }
+            newJob.internalNotes = p.internalNotes
+            newJob.conclusionComment = p.conclusionComment
+            newJob.interiorFinishes = p.interiorFinishes
+            newJob.exteriorFinishes = p.exteriorFinishes
+            newJob.jobStatus = p.jobStatus
+            newJob.reportDeliveredAt = p.reportDeliveredAt.map { Date(timeIntervalSince1970: $0) }
+            newJob.backedUpToArchiveAt = p.backedUpToArchiveAt.map { Date(timeIntervalSince1970: $0) }
+            newJob.includeEngineeringLetter = p.includeEngineeringLetter ?? false
+            newJob.customWeatherText = p.customWeatherText
+            
+            let didStartAccess = !pending.isTempDirectory && pending.directory.startAccessingSecurityScopedResource()
+            defer { if didStartAccess { pending.directory.stopAccessingSecurityScopedResource() } }
+            
+            do {
+                try await applyFullJobPackage(pending.package, from: pending.directory, to: newJob)
+                if pending.isTempDirectory {
+                    try? FileManager.default.removeItem(at: pending.directory)
+                }
+                await MainActor.run {
+                    pendingDuplicateResolution = nil
+                    importProgress = 1.0
+                    isImporting = false
+                    importedJobs = [newJob]
+                    importRefreshId = UUID()
+                    NotificationCenter.default.post(name: .newJobCreated, object: newJob)
+                }
+            } catch {
+                await MainActor.run {
+                    importError = error.localizedDescription
+                    pendingDuplicateResolution = nil
+                    isImporting = false
+                }
+            }
+        }
     }
     
     private func importOverheadImage(from directory: URL, filePath: String, for job: Job) async throws {
@@ -1280,6 +1423,7 @@ class JobImportService: ObservableObject {
         }
         
         print("📷 Importing photo: \(sourceURL.lastPathComponent) for window \(window.windowNumber ?? "?")")
+        print("MYDEBUG → rotationDegrees from package: \(photoData.rotationDegrees ?? -999)")
         
         // Import photo using file system storage
         let photo = try await photoImportService.importFromFile(
@@ -1299,6 +1443,7 @@ class JobImportService: ObservableObject {
         photo.arrowXPosition = photoData.arrowXPosition ?? 0.0
         photo.arrowYPosition = photoData.arrowYPosition ?? 0.0
         photo.arrowDirection = photoData.arrowDirection
+        photo.rotationDegrees = photoData.rotationDegrees ?? 0
         photo.includeInReport = photoData.includeInReport
         if let createdAt = photoData.createdAt {
             photo.createdAt = Date(timeIntervalSince1970: createdAt)
