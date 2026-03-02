@@ -35,6 +35,7 @@
         <attribute name="createdAt" optional="NO" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="updatedAt" optional="NO" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="includeEngineeringLetter" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
+        <attribute name="includeWeatherInReport" optional="YES" attributeType="Boolean" defaultValueString="YES" usesScalarValueType="YES"/>
         <attribute name="backedUpToArchiveAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="reportDeliveredAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="jobStatus" optional="YES" attributeType="String"/>

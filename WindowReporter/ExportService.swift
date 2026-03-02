@@ -2107,7 +2107,8 @@ struct FieldResultsPackage {
         currentYFromTop = drawWrappedText(observationsText, attributes: bodyAttributes, yFromTop: currentYFromTop, width: contentWidth)
         currentYFromTop += 20
         
-        // WEATHER HISTORY - use custom text if set, otherwise default
+        // WEATHER HISTORY (only when weather is included in report)
+        if job.includeWeatherInReport ?? true {
         currentYFromTop = drawWrappedText("WEATHER HISTORY:", attributes: headerAttributes, yFromTop: currentYFromTop, width: contentWidth)
         currentYFromTop += 8
         let weatherText: String
@@ -2171,6 +2172,7 @@ struct FieldResultsPackage {
             let imageX = (pageRect.width - imageWidth) / 2
             let imagePdfY = pageRect.height - currentYFromTop - imageHeight
             drawNSImage(image, in: CGRect(x: imageX, y: imagePdfY, width: imageWidth, height: imageHeight), context: context)
+        }
         }
         
         // Footer in reserved band at bottom (never over content)
@@ -2957,18 +2959,19 @@ struct FieldResultsPackage {
         citation1.draw(in: CGRect(x: 50, y: currentY - citation1DrawHeight, width: citationWidth, height: citation1DrawHeight), withAttributes: citationAttributes)
         currentY -= citation1DrawHeight + citationSpacing
         
-        // Second citation (Visual Crossing) - hanging indent
+        // Second and third citations (weather sources) - only when weather is included in report
+        if job.includeWeatherInReport ?? true {
         let citation2 = "2 Visual Crossing Corporation. \"Historical Weather Data for 606 Lime St, Auburndale, FL 33823, United States.\" Visual Crossing Weather History, 2024, https://www.visualcrossing.com/weather-history/606%20Lime%20St,%20Auburndale,%20FL%2033823/us/2024-10-09/. Accessed 4 Dec. 2025."
         let citation2BoundingRect = citation2.boundingRect(with: CGSize(width: citationWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: citationAttributes, context: nil)
         let citation2DrawHeight = citation2BoundingRect.height + 2  // Buffer to avoid clipping
         citation2.draw(in: CGRect(x: 50, y: currentY - citation2DrawHeight, width: citationWidth, height: citation2DrawHeight), withAttributes: citationAttributes)
         currentY -= citation2DrawHeight + citationSpacing
         
-        // Third citation (NOAA) - hanging indent
         let citation3 = "3 Beven, J. L., II, et al. National Hurricane Center Tropical Cyclone Report: Hurricane Milton (AL142024). National Hurricane Center, 31 Mar. 2025, https://www.nhc.noaa.gov/data/tcr/AL142024_Milton.pdf. Accessed Nov 18, 2025."
         let citation3BoundingRect = citation3.boundingRect(with: CGSize(width: citationWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: citationAttributes, context: nil)
         let citation3DrawHeight = citation3BoundingRect.height + 2  // Buffer to avoid clipping
         citation3.draw(in: CGRect(x: 50, y: currentY - citation3DrawHeight, width: citationWidth, height: citation3DrawHeight), withAttributes: citationAttributes)
+        }
         
         // Footer at bottom of page (fixed band at Y=50)
         let footerFont = NSFont.systemFont(ofSize: 10)
@@ -3839,6 +3842,7 @@ class FullJobPackageExporter {
             reportDeliveredAt: job.reportDeliveredAt?.timeIntervalSince1970,
             backedUpToArchiveAt: job.backedUpToArchiveAt?.timeIntervalSince1970,
             includeEngineeringLetter: includeEngineeringLetterOverride ?? job.includeEngineeringLetter,
+            includeWeatherInReport: job.includeWeatherInReport ?? true,
             customWeatherText: job.customWeatherText,
             customHurricaneImageFile: customHurricaneImageFile,
             windows: fullWindows
@@ -5310,7 +5314,8 @@ fileprivate final class DocxTemplateRenderer {
         let observationsText = "Observations are presented within this report. Property condition is described in photograph captions and elsewhere. Full-resolution images are retained electronically and can be provided upon request."
         xml += xmlParagraph(observationsText, spacingBefore: 0, spacingAfter: 240)
         
-        // WEATHER HISTORY Section - use custom text if set, otherwise default
+        // WEATHER HISTORY Section (only when weather is included in report)
+        if job.includeWeatherInReport ?? true {
         xml += xmlBoldParagraph("WEATHER HISTORY:", color: "5BA3D6", spacingBefore: 0, spacingAfter: 0)
         let weatherHistoryText: String
         if let customWeatherText = job.customWeatherText,
@@ -5331,6 +5336,7 @@ fileprivate final class DocxTemplateRenderer {
         // Second image: Wide map view
         if let mapRef = mapImageRef {
             xml += xmlImageParagraph(relId: mapRef.relId, docPrId: mapRef.docPrId, cx: mapRef.cx, cy: mapRef.cy, alignment: "center")
+        }
         }
         
         // Add section break at end to remove footer spacing for this page and restore for next
@@ -5360,12 +5366,13 @@ fileprivate final class DocxTemplateRenderer {
         let citation1 = "1 Federal Emergency Management Agency. \"Cyclical Wind Pressures in Hurricanes.\" Home Builder's Guide to Coastal Construction Technical Fact Sheet Series, no. 1.3, Dec. 2018, www.fema.gov/sites/default/files/2020-07/fema_p499_fact_sheet_1-3_cyclical_wind_pressures.pdf."
         xml += xmlParagraph(citation1, spacingBefore: 0, spacingAfter: 240)
         
-        // Second citation (NOAA) - no indent, left aligned, with line break before URL
+        // Second citation (NOAA, weather source) - only when weather is included in report
+        if job.includeWeatherInReport ?? true {
         let citation2Text = "2 Beven, John L., II, et al. National Hurricane Center Tropical Cyclone Report: Hurricane Milton (AL142024). National Hurricane Center, 31 Mar. 2025, "
         let citation2URL = "https://www.nhc.noaa.gov/data/tcr/AL142024_Milton.pdf."
-        // Create custom XML with line break before URL
         let rPr = "<w:rFonts w:ascii=\"Graphik\" w:hAnsi=\"Graphik\" w:eastAsia=\"Graphik\" w:cstheme=\"minorHAnsi\"/>"
         xml += "<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\"/></w:pPr><w:r><w:rPr>\(rPr)</w:rPr><w:t xml:space=\"preserve\">\(citation2Text.xmlEscaped)</w:t></w:r><w:r><w:br/></w:r><w:r><w:rPr>\(rPr)</w:rPr><w:t xml:space=\"preserve\">\(citation2URL.xmlEscaped)</w:t></w:r></w:p>"
+        }
         
         return xml
     }
