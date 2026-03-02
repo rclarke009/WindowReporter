@@ -119,6 +119,8 @@ struct FullJobPackage: Codable {
         let testStopTime: Double?
         let createdAt: Double?
         let updatedAt: Double?
+        /// Specimen order (0-based). Optional for backward compatibility with packages exported before this field existed.
+        let displayOrder: Int?
         let photos: [FullPhotoData]
     }
     
@@ -639,6 +641,9 @@ class JobImportService: ObservableObject {
             let existingWindows = try context.fetch(fetchRequest)
             let window: Window
             
+            // Use displayOrder from file when present (preserves order from export); otherwise use array index for backward compatibility
+            let orderFromFile = windowData.displayOrder ?? index
+            
             if let existingWindow = existingWindows.first {
                 window = existingWindow
                 window.windowNumber = windowData.windowNumber
@@ -654,6 +659,7 @@ class JobImportService: ObservableObject {
                 window.notes = windowData.notes
                 window.testStartTime = windowData.testStartTime.map { Date(timeIntervalSince1970: $0) }
                 window.testStopTime = windowData.testStopTime.map { Date(timeIntervalSince1970: $0) }
+                window.displayOrder = Int32(orderFromFile)
                 window.updatedAt = Date()
                 // Replace path: remove existing photos so imported package photos don't duplicate
                 if let existingPhotos = window.photos?.allObjects as? [Photo] {
@@ -679,6 +685,7 @@ class JobImportService: ObservableObject {
                 window.testStopTime = windowData.testStopTime.map { Date(timeIntervalSince1970: $0) }
                 window.createdAt = windowData.createdAt.map { Date(timeIntervalSince1970: $0) } ?? Date()
                 window.updatedAt = Date()
+                window.displayOrder = Int32(orderFromFile)
                 window.job = job
             }
             

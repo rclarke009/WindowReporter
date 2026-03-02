@@ -599,6 +599,7 @@ struct PhotoThumbnailView: View {
     let window = Window(context: context)
     window.windowId = UUID().uuidString
     window.windowNumber = "1"
+    window.displayOrder = 0
     window.job = job
     
     return WindowEditorView(window: window)

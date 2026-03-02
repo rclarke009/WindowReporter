@@ -268,6 +268,11 @@ struct FieldResultsPackage {
         return (windowsSet.allObjects as? [Window]) ?? []
     }
     
+    /// Windows in user-defined display order (for dots and report numbering).
+    private var windowsInDisplayOrder: [Window] {
+        windows.sorted { $0.displayOrder < $1.displayOrder }
+    }
+    
     /// Sort windows alphabetically by title (text part) then numerically by number
     /// Handles "Specimen 1", "Specimen 2", "Specimen 10" correctly
     private func sortWindowsByTitleThenNumber(_ windows: [Window]) -> [Window] {
@@ -498,8 +503,8 @@ struct FieldResultsPackage {
         let imageWithDots = NSImage(size: imageSize, flipped: false) { rect in
             image.draw(in: rect)
             
-            // Draw window dots
-            for window in windows {
+            // Draw window dots (label = 1-based display order)
+            for (index, window) in windowsInDisplayOrder.enumerated() {
                 let point = CGPoint(x: window.xPosition, y: window.yPosition)
                 let windowDotColor = dotColor(for: window)
                 
@@ -507,9 +512,7 @@ struct FieldResultsPackage {
                 context.setFillColor(windowDotColor.cgColor)
                 context.fillEllipse(in: CGRect(x: point.x - 10, y: point.y - 10, width: 20, height: 20))
                 
-                // Draw window number (just the number at the end of the specimen name)
-                let windowNumber = window.windowNumber ?? ""
-                let displayNumber = extractNumberFromSpecimenName(windowNumber)
+                let displayNumber = "\(index + 1)"
                 let attributes: [NSAttributedString.Key: Any] = [
                     .font: NSFont.systemFont(ofSize: 12, weight: .bold),
                     .foregroundColor: NSColor.white
@@ -777,7 +780,7 @@ struct FieldResultsPackage {
         // Calculate total pages first
         var allPages: [(type: String, window: Window?, photos: [FieldResultsPackage.PhotoData]?)] = []
         
-        for window in sortWindowsByTitleThenNumber(windows) {
+        for window in windowsInDisplayOrder {
             // Add test page for each window
             allPages.append((type: "test", window: window, photos: nil))
             
@@ -1997,12 +2000,12 @@ struct FieldResultsPackage {
         timeFormatter.timeStyle = .short
         timeFormatter.dateStyle = .none
         
-        let sortedWindows = sortWindowsByTitleThenNumber(windows)
+        let sortedWindows = windowsInDisplayOrder
         var currentRowY = headerLineY - 22  // Padding below separator so data rows sit properly in cells
         
-        for window in sortedWindows {
+        for (index, window) in sortedWindows.enumerated() {
             let result = getDisplayTestResult(for: window)
-            let windowNumber = extractNumberFromSpecimenName(window.windowNumber ?? "")
+            let windowNumber = "\(index + 1)"
             
             let startTime: String
             if let testStartTime = window.testStartTime {
@@ -2278,7 +2281,7 @@ struct FieldResultsPackage {
             let imageRect = CGRect(x: containerX, y: containerBottomY, width: maxSide, height: maxSide)
             drawTransformedImage(cgImage: cg, in: imageRect, context: context, scale: scale, panX: panX, panY: panY, rotation: 0)
             
-            for window in sortWindowsByTitleThenNumber(windows) {
+            for (index, window) in windowsInDisplayOrder.enumerated() {
                 guard window.xPosition > 0 && window.yPosition > 0 else { continue }
                 let windowDotColor = dotColor(for: window)
                 // Convert from stored (image.size) space to pixel space when they differ
@@ -2307,16 +2310,14 @@ struct FieldResultsPackage {
                 context.setFillColor(windowDotColor.cgColor)
                 context.fillEllipse(in: dotRect)
                 
-                // Draw window number (just the number at the end of the specimen name)
-                if let windowNumber = window.windowNumber {
-                    let displayNumber = extractNumberFromSpecimenName(windowNumber)
-                    let numberAttributes: [NSAttributedString.Key: Any] = [
-                        .font: NSFont.systemFont(ofSize: 10, weight: .bold),
-                        .foregroundColor: NSColor.white
-                    ]
-                    let numberSize = displayNumber.size(withAttributes: numberAttributes)
-                    displayNumber.draw(at: CGPoint(x: pdfDotX - numberSize.width / 2, y: pdfDotY - numberSize.height / 2), withAttributes: numberAttributes)
-                }
+                // Draw 1-based display order as dot label
+                let displayNumber = "\(index + 1)"
+                let numberAttributes: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 10, weight: .bold),
+                    .foregroundColor: NSColor.white
+                ]
+                let numberSize = displayNumber.size(withAttributes: numberAttributes)
+                displayNumber.draw(at: CGPoint(x: pdfDotX - numberSize.width / 2, y: pdfDotY - numberSize.height / 2), withAttributes: numberAttributes)
             }
             }
         } else {
@@ -2416,7 +2417,7 @@ struct FieldResultsPackage {
 
         drawLine("RECOMMENDATIONS & CONCLUSION", attrs: [.font: NSFont.boldSystemFont(ofSize: 24), .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)], spacingAfter: 8)
         
-        let sortedWindows = sortWindowsByTitleThenNumber(windows)
+        let sortedWindows = windowsInDisplayOrder
         let failedWindows = sortedWindows.filter { $0.testResult == "Fail" }
         let inaccessibleWindows = sortedWindows.filter { $0.isInaccessible }
         let windowsTested = sortedWindows.count - inaccessibleWindows.count
@@ -3229,7 +3230,7 @@ struct FieldResultsPackage {
     }
 
     private func generateDOCXReport(in directory: URL) async throws -> URL {
-        let sortedWindows = sortWindowsByTitleThenNumber(windows)
+        let sortedWindows = windowsInDisplayOrder
 
         let coverResource = loadCoverPageResource()
         let (overviewInlineResource, overviewFullResource, overheadResource) = loadOverviewResources(from: directory)
@@ -3720,8 +3721,8 @@ class FullJobPackageExporter {
             }
         }
         
-        // Process windows and photos
-        let windows = (job.windows?.allObjects as? [Window]) ?? []
+        // Process windows in display order so the package order matches the app
+        let windows = ((job.windows?.allObjects as? [Window]) ?? []).sorted { $0.displayOrder < $1.displayOrder }
         var fullWindows: [FullJobPackage.FullWindowData] = []
         
         for window in windows {
@@ -3790,6 +3791,7 @@ class FullJobPackageExporter {
                 testStopTime: window.testStopTime?.timeIntervalSince1970,
                 createdAt: window.createdAt?.timeIntervalSince1970,
                 updatedAt: window.updatedAt?.timeIntervalSince1970,
+                displayOrder: Int(window.displayOrder),
                 photos: fullPhotos
             )
             fullWindows.append(fullWindow)
@@ -4245,7 +4247,7 @@ fileprivate final class DocxTemplateRenderer {
             
             // Add specimen information table - use actualWindows to get Window object with test times
             if index < actualWindows.count {
-                body += generateSpecimenTableXML(window: actualWindows[index], job: job)
+                body += generateSpecimenTableXML(window: actualWindows[index], job: job, displayIndex: index + 1)
                 body += xmlSpacerParagraph(before: 120, after: 0)
             }
             
@@ -4896,7 +4898,7 @@ fileprivate final class DocxTemplateRenderer {
     }
     
     private func generateWindowTestingSummaryXML(job: Job, windows: [Window]) -> String {
-        let sortedWindows = sortWindowsByTitleThenNumber(windows)
+        let sortedWindows = windows.sorted { $0.displayOrder < $1.displayOrder }
         
         let timeFormatter = DateFormatter()
         timeFormatter.timeStyle = .short
@@ -5086,10 +5088,10 @@ fileprivate final class DocxTemplateRenderer {
           </w:tr>
         """
         
-        // Data rows
-        for window in sortedWindows {
+        // Data rows (1-based display order)
+        for (index, window) in sortedWindows.enumerated() {
             let result = getDisplayTestResult(for: window)
-            let windowNumber = extractNumberFromSpecimenName(window.windowNumber ?? "")
+            let windowNumber = "\(index + 1)"
             
             let startTime: String
             if let testStartTime = window.testStartTime {
@@ -5207,7 +5209,7 @@ fileprivate final class DocxTemplateRenderer {
     }
     
     private func generateSummaryOfFindingsXML(job: Job, windows: [Window]) -> String {
-        let sortedWindows = sortWindowsByTitleThenNumber(windows)
+        let sortedWindows = windows.sorted { $0.displayOrder < $1.displayOrder }
         
         // Calculate statistics
         let failedWindows = sortedWindows.filter { $0.testResult == "Fail" }
@@ -7182,9 +7184,8 @@ fileprivate final class DocxTemplateRenderer {
         return xml
     }
 
-    private func generateSpecimenTableXML(window: Window, job: Job) -> String {
-        // Extract specimen number from window number
-        let specimenNumber = extractNumberFromSpecimenName(window.windowNumber ?? "1")
+    private func generateSpecimenTableXML(window: Window, job: Job, displayIndex: Int) -> String {
+        let specimenNumber = "\(displayIndex)"
         let testNumber = specimenNumber
         let procedure = job.testProcedure?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "ASTM E1105"
         

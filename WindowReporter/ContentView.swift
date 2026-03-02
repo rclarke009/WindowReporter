@@ -333,10 +333,10 @@ struct SidebarView: View {
             ToolbarItem(placement: .automatic) {
                 Menu {
                     Button(action: { jobsSortOrderRaw = JobSortOrder.newestFirst.rawValue }) {
-                        Label("Newest first", systemImage: jobsSortOrder == .newestFirst ? "checkmark" : "")
+                        Label("Newest first", systemImage: jobsSortOrder == .newestFirst ? "checkmark.circle.fill" : "circle")
                     }
                     Button(action: { jobsSortOrderRaw = JobSortOrder.alphabetical.rawValue }) {
-                        Label("Alphabetical (A–Z)", systemImage: jobsSortOrder == .alphabetical ? "checkmark" : "")
+                        Label("Alphabetical (A–Z)", systemImage: jobsSortOrder == .alphabetical ? "checkmark.circle.fill" : "circle")
                     }
                 } label: {
                     Label("Sort", systemImage: "arrow.up.arrow.down.circle")
