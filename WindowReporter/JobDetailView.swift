@@ -177,6 +177,98 @@ private func windowsInDisplayOrder(for job: Job) -> [Window] {
     return list.sorted { $0.displayOrder < $1.displayOrder }
 }
 
+/// True if the string matches "Specimen" + number (e.g. "Specimen 1", "specimen 10").
+private func windowNumberIsSpecimenN(_ string: String?) -> Bool {
+    guard let s = string?.trimmingCharacters(in: .whitespaces), !s.isEmpty else { return false }
+    let lower = s.lowercased()
+    guard lower.hasPrefix("specimen") else { return false }
+    let after = String(lower.dropFirst("specimen".count)).trimmingCharacters(in: .whitespaces)
+    return !after.isEmpty && after.allSatisfy { $0.isNumber }
+}
+
+/// True iff the job has at least one window and every window's windowNumber matches "Specimen N".
+private func jobUsesSpecimenNumbering(_ job: Job) -> Bool {
+    let windows = (job.windows?.allObjects as? [Window]) ?? []
+    guard !windows.isEmpty else { return false }
+    return windows.allSatisfy { windowNumberIsSpecimenN($0.windowNumber) }
+}
+
+/// Copies the given windows (and their photos) to the target job. New windows get new IDs and "Specimen N" numbers. File-based photos are copied to the target job's folder; library photos keep the same localIdentifier.
+private func copySpecimens(_ windows: [Window], to targetJob: Job, context: NSManagedObjectContext) throws {
+    guard let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+        throw NSError(domain: "SpecimenCopy", code: 1, userInfo: [NSLocalizedDescriptionKey: "Documents directory not found"])
+    }
+    let targetJobId = targetJob.jobId ?? "unknown"
+    let targetWindows = windowsInDisplayOrder(for: targetJob)
+    let nextSpecimenNumber = targetWindows.count + 1
+    let startDisplayOrder = Int(targetWindows.last?.displayOrder ?? -1) + 1
+
+    for (index, sourceWindow) in windows.enumerated() {
+        let newWindow = Window(context: context)
+        newWindow.windowId = UUID().uuidString
+        newWindow.job = targetJob
+        newWindow.xPosition = sourceWindow.xPosition
+        newWindow.yPosition = sourceWindow.yPosition
+        newWindow.width = sourceWindow.width
+        newWindow.height = sourceWindow.height
+        newWindow.windowType = sourceWindow.windowType
+        newWindow.material = sourceWindow.material
+        newWindow.testResult = sourceWindow.testResult
+        newWindow.leakPoints = sourceWindow.leakPoints
+        newWindow.isInaccessible = sourceWindow.isInaccessible
+        newWindow.untestedReason = sourceWindow.untestedReason
+        newWindow.notes = sourceWindow.notes
+        newWindow.testStartTime = sourceWindow.testStartTime
+        newWindow.testStopTime = sourceWindow.testStopTime
+        newWindow.windowNumber = "Specimen \(nextSpecimenNumber + index)"
+        newWindow.displayOrder = Int32(startDisplayOrder + index)
+        newWindow.createdAt = Date()
+        newWindow.updatedAt = Date()
+
+        let sourcePhotos = (sourceWindow.photos?.allObjects as? [Photo]) ?? []
+        let newWindowId = newWindow.windowId ?? "unknown"
+        let destPhotoDir = documentsDirectory.appendingPathComponent("photos").appendingPathComponent(targetJobId).appendingPathComponent(newWindowId)
+
+        for sourcePhoto in sourcePhotos {
+            let newPhoto = Photo(context: context)
+            newPhoto.photoId = UUID().uuidString
+            newPhoto.photoType = sourcePhoto.photoType
+            newPhoto.notes = sourcePhoto.notes
+            newPhoto.includeInReport = sourcePhoto.includeInReport
+            newPhoto.arrowXPosition = sourcePhoto.arrowXPosition
+            newPhoto.arrowYPosition = sourcePhoto.arrowYPosition
+            newPhoto.arrowDirection = sourcePhoto.arrowDirection
+            newPhoto.rotationDegrees = sourcePhoto.rotationDegrees
+            newPhoto.createdAt = Date()
+            newPhoto.window = newWindow
+
+            if let filePath = sourcePhoto.filePath, !filePath.isEmpty {
+                let sourceFullPath = documentsDirectory.appendingPathComponent(filePath)
+                if FileManager.default.fileExists(atPath: sourceFullPath.path) {
+                    try? FileManager.default.createDirectory(at: destPhotoDir, withIntermediateDirectories: true)
+                    let filename = sourceFullPath.lastPathComponent
+                    let destURL = destPhotoDir.appendingPathComponent(filename)
+                    do {
+                        try FileManager.default.copyItem(at: sourceFullPath, to: destURL)
+                        newPhoto.filePath = "photos/\(targetJobId)/\(newWindowId)/\(filename)"
+                        newPhoto.photoSource = sourcePhoto.photoSource ?? "FileSystem"
+                    } catch {
+                        print("MYDEBUG →", "Failed to copy photo file \(filename): \(error.localizedDescription)")
+                    }
+                } else {
+                    print("MYDEBUG →", "Photo file not found at \(sourceFullPath.path), skipping")
+                }
+            } else if let localId = sourcePhoto.localIdentifier {
+                newPhoto.localIdentifier = localId
+                newPhoto.photoSource = sourcePhoto.photoSource ?? "PhotosLibrary"
+            }
+        }
+    }
+
+    try context.save()
+    context.refresh(targetJob, mergeChanges: true)
+}
+
 /// Forces NSScrollView to use legacy scroller style (always-visible scrollbars) on macOS.
 private struct LegacyScrollbarsModifier: ViewModifier {
     func body(content: Content) -> some View {
@@ -778,6 +870,7 @@ struct InfoRow: View {
 struct WindowsListView: View {
     let job: Job
     @Environment(\.managedObjectContext) private var viewContext
+    @State private var showingCopySpecimensSheet = false
     
     private var sortedWindows: [Window] {
         windowsInDisplayOrder(for: job)
@@ -809,6 +902,17 @@ struct WindowsListView: View {
         for w in arr { viewContext.refresh(w, mergeChanges: true) }
     }
     
+    private func renumberSpecimensToMatchOrder() {
+        let ordered = windowsInDisplayOrder(for: job)
+        for (i, w) in ordered.enumerated() {
+            w.windowNumber = "Specimen \(i + 1)"
+        }
+        guard (try? viewContext.save()) != nil else { return }
+        viewContext.processPendingChanges()
+        viewContext.refresh(job, mergeChanges: true)
+        for w in ordered { viewContext.refresh(w, mergeChanges: true) }
+    }
+    
     var body: some View {
         Group {
             if sortedWindows.isEmpty {
@@ -824,8 +928,16 @@ struct WindowsListView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding()
             } else {
-                List {
-                    ForEach(Array(sortedWindows.enumerated()), id: \.element.objectID) { index, window in
+                VStack(alignment: .leading, spacing: 8) {
+                    if jobUsesSpecimenNumbering(job) {
+                        Button("Renumber?") {
+                            renumberSpecimensToMatchOrder()
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Renumber specimens to match current order (Specimen 1, 2, 3…)")
+                    }
+                    List {
+                        ForEach(Array(sortedWindows.enumerated()), id: \.element.objectID) { index, window in
                         ZStack(alignment: .leading) {
                             HStack(spacing: 0) {
                                 Color.clear.frame(width: 44, height: 1)
@@ -859,8 +971,9 @@ struct WindowsListView: View {
                         }
                         .padding(.vertical, 4)
                     }
+                    }
+                    .scrollIndicators(.visible)
                 }
-                .scrollIndicators(.visible)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -868,6 +981,20 @@ struct WindowsListView: View {
             ensureDisplayOrderForJob(job, context: viewContext)
         }
         .modifier(LegacyScrollbarsModifier())
+        .toolbar {
+            if !sortedWindows.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Copy to Another Report") {
+                        showingCopySpecimensSheet = true
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showingCopySpecimensSheet) {
+            CopySpecimensToReportSheet(sourceJob: job) {
+                showingCopySpecimensSheet = false
+            }
+        }
     }
 }
 
@@ -931,6 +1058,176 @@ struct WindowRowView: View {
             WindowEditorView(window: window)
                 .frame(width: 1000, height: 800)
         }
+    }
+}
+
+// MARK: - Copy Specimens to Another Report
+
+struct CopySpecimensToReportSheet: View {
+    let sourceJob: Job
+    let onDismiss: () -> Void
+    @Environment(\.managedObjectContext) private var viewContext
+    @Environment(\.dismiss) private var dismiss
+
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \Job.createdAt, ascending: false)],
+        animation: .default)
+    private var jobs: FetchedResults<Job>
+    @AppStorage("jobsSortOrder") private var jobsSortOrderRaw: String = JobSortOrder.newestFirst.rawValue
+
+    @State private var selectedWindowIds: Set<String> = []
+    @State private var selectedTargetJob: Job?
+    @State private var copyError: String?
+    @State private var isCopying = false
+    @State private var copySuccessMessage: String?
+
+    private var jobsSortOrder: JobSortOrder {
+        JobSortOrder(rawValue: jobsSortOrderRaw) ?? .newestFirst
+    }
+
+    private var sourceWindows: [Window] {
+        windowsInDisplayOrder(for: sourceJob)
+    }
+
+    private var otherJobs: [Job] {
+        let filtered = jobs.filter { $0.objectID != sourceJob.objectID }
+        if jobsSortOrder == .alphabetical {
+            return filtered.sorted { j1, j2 in
+                let c1 = (j1.clientName ?? "").lowercased()
+                let c2 = (j2.clientName ?? "").lowercased()
+                if c1 != c2 { return c1 < c2 }
+                return (j1.jobId ?? "") < (j2.jobId ?? "")
+            }
+        }
+        return Array(filtered)
+    }
+
+    private var selectedWindows: [Window] {
+        sourceWindows.filter { w in w.windowId.map { selectedWindowIds.contains($0) } ?? false }
+    }
+
+    private var canCopy: Bool {
+        !isCopying && selectedTargetJob != nil && !selectedWindows.isEmpty && !otherJobs.isEmpty
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Copy Specimens to Report")
+                .font(.headline)
+                .padding()
+            Divider()
+            Form {
+                Section("Specimens to copy") {
+                    HStack {
+                        Button("Select all") {
+                            selectedWindowIds = Set(sourceWindows.compactMap { $0.windowId })
+                        }
+                        Button("Select none") {
+                            selectedWindowIds = []
+                        }
+                        Spacer()
+                    }
+                    .buttonStyle(.borderless)
+                    ForEach(sourceWindows, id: \.windowId) { window in
+                        Toggle(isOn: Binding(
+                            get: { window.windowId.map { selectedWindowIds.contains($0) } ?? false },
+                            set: { on in
+                                guard let id = window.windowId else { return }
+                                if on { selectedWindowIds.insert(id) } else { selectedWindowIds.remove(id) }
+                            }
+                        )) {
+                            Text(window.windowNumber ?? "?")
+                                .font(.body)
+                        }
+                    }
+                }
+                Section("Destination report") {
+                    if otherJobs.isEmpty {
+                        Text("No other reports. Create or import another job first.")
+                            .foregroundColor(.secondary)
+                    } else {
+                        ForEach(otherJobs, id: \.jobId) { job in
+                            Button(action: { selectedTargetJob = job }) {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(job.jobId ?? "Unknown")
+                                            .font(.subheadline)
+                                            .fontWeight(.medium)
+                                            .foregroundColor(.primary)
+                                        Text(job.clientName ?? "")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        Text(formatAddress(job: job))
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer()
+                                    if selectedTargetJob?.jobId == job.jobId {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(.accentColor)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                if let error = copyError {
+                    Section {
+                        Text(error)
+                            .foregroundColor(.red)
+                            .font(.caption)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            Divider()
+            HStack {
+                if let msg = copySuccessMessage {
+                    Text(msg)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button("Cancel") {
+                    onDismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button("Copy") {
+                    performCopy()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canCopy)
+            }
+            .padding()
+        }
+        .frame(width: 480, height: 420)
+        .onAppear {
+            selectedWindowIds = Set(sourceWindows.compactMap { $0.windowId })
+            copyError = nil
+            copySuccessMessage = nil
+        }
+    }
+
+    private func performCopy() {
+        guard let target = selectedTargetJob else { return }
+        let windows = selectedWindows
+        guard !windows.isEmpty else { return }
+        copyError = nil
+        isCopying = true
+        do {
+            try copySpecimens(windows, to: target, context: viewContext)
+            let targetLabel = target.jobId ?? "report"
+            copySuccessMessage = "Copied \(windows.count) specimen(s) to \(targetLabel)"
+            NotificationCenter.default.post(name: .jobDataUpdated, object: target)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                onDismiss()
+            }
+        } catch {
+            copyError = error.localizedDescription
+        }
+        isCopying = false
     }
 }
 
@@ -1658,7 +1955,7 @@ struct ExportView: View {
                                 Image(systemName: "slider.horizontal.3")
                                 Text("Customize Report")
                                 Spacer()
-                                if hasCustomHurricaneImage() || hasCustomWeatherText() || hasConclusionComment() || includeEngineeringLetter {
+                                if hasCustomHurricaneImage() || hasCustomWeatherText() || hasConclusionComment() || includeEngineeringLetter || !(job.includeWeatherInReport ?? true) {
                                     Image(systemName: "checkmark.circle.fill")
                                         .foregroundColor(.green)
                                 }
@@ -2370,6 +2667,7 @@ struct ReportCustomizationSheetView: View {
     @Binding var includeEngineeringLetter: Bool
     @Environment(\.managedObjectContext) private var viewContext
     
+    @State private var editingIncludeWeatherInReport: Bool = true
     @State private var editingCustomWeatherText: String = ""
     @State private var editingConclusionComment: String = ""
     @State private var editingIncludeEngineeringLetter: Bool = false
@@ -2385,6 +2683,12 @@ struct ReportCustomizationSheetView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    GroupBox("Weather in Report") {
+                        Toggle("Include Weather in Report", isOn: $editingIncludeWeatherInReport)
+                            .padding()
+                    }
+                    
+                    if editingIncludeWeatherInReport {
                     GroupBox("Custom Weather Image") {
                         VStack(alignment: .leading, spacing: 12) {
                             if hasCustomHurricaneImage() {
@@ -2483,6 +2787,7 @@ struct ReportCustomizationSheetView: View {
                             }
                         }
                         .padding()
+                    }
                     }
                     
                     GroupBox("Conclusion Comment") {
@@ -2595,6 +2900,7 @@ struct ReportCustomizationSheetView: View {
     }
     
     private func loadInitialValues() {
+        editingIncludeWeatherInReport = job.includeWeatherInReport ?? true
         editingCustomWeatherText = job.customWeatherText ?? ""
         editingConclusionComment = job.conclusionComment ?? ""
         editingIncludeEngineeringLetter = job.includeEngineeringLetter ?? false
@@ -2648,6 +2954,8 @@ struct ReportCustomizationSheetView: View {
     }
     
     private func handleSave() {
+        job.includeWeatherInReport = editingIncludeWeatherInReport
+        
         let trimmedWeatherText = editingCustomWeatherText.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedWeatherText.isEmpty {
             job.customWeatherText = nil

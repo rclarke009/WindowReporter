@@ -97,6 +97,7 @@ struct FullJobPackage: Codable {
         let reportDeliveredAt: Double?
         let backedUpToArchiveAt: Double?
         let includeEngineeringLetter: Bool?
+        let includeWeatherInReport: Bool?
         let customWeatherText: String?
         let customHurricaneImageFile: String?
         let windows: [FullWindowData]
@@ -578,6 +579,7 @@ class JobImportService: ObservableObject {
         job.reportDeliveredAt = package.job.reportDeliveredAt.map { Date(timeIntervalSince1970: $0) }
         job.backedUpToArchiveAt = package.job.backedUpToArchiveAt.map { Date(timeIntervalSince1970: $0) }
         job.includeEngineeringLetter = package.job.includeEngineeringLetter ?? false
+        job.includeWeatherInReport = package.job.includeWeatherInReport ?? true
         job.customWeatherText = package.job.customWeatherText
         
         try await applyFullJobPackage(package, from: directory, to: job)
@@ -787,6 +789,7 @@ class JobImportService: ObservableObject {
             if let v = p.reportDeliveredAt { job.reportDeliveredAt = Date(timeIntervalSince1970: v) }
             if let v = p.backedUpToArchiveAt { job.backedUpToArchiveAt = Date(timeIntervalSince1970: v) }
             if let v = p.includeEngineeringLetter { job.includeEngineeringLetter = v }
+            if let v = p.includeWeatherInReport { job.includeWeatherInReport = v }
             if let v = p.customWeatherText { job.customWeatherText = v }
             job.updatedAt = Date()
             
@@ -848,6 +851,7 @@ class JobImportService: ObservableObject {
             newJob.reportDeliveredAt = p.reportDeliveredAt.map { Date(timeIntervalSince1970: $0) }
             newJob.backedUpToArchiveAt = p.backedUpToArchiveAt.map { Date(timeIntervalSince1970: $0) }
             newJob.includeEngineeringLetter = p.includeEngineeringLetter ?? false
+            newJob.includeWeatherInReport = p.includeWeatherInReport ?? true
             newJob.customWeatherText = p.customWeatherText
             
             let didStartAccess = !pending.isTempDirectory && pending.directory.startAccessingSecurityScopedResource()
