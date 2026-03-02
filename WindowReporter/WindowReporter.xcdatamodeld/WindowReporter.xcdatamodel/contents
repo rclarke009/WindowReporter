@@ -63,6 +63,7 @@
         <attribute name="updatedAt" optional="NO" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="testStartTime" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="testStopTime" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="displayOrder" optional="YES" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="YES"/>
         <relationship name="job" optional="NO" maxCount="1" deletionRule="Nullify" destinationEntity="Job" inverseName="windows" inverseEntity="Job"/>
         <relationship name="photos" optional="YES" toMany="YES" deletionRule="Cascade" destinationEntity="Photo" inverseName="window" inverseEntity="Photo"/>
     </entity>

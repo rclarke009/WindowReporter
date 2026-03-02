@@ -331,6 +331,7 @@ struct PhotoLargeItemView: View {
     let window = Window(context: context)
     window.windowId = "W01"
     window.windowNumber = "W01"
+    window.displayOrder = 0
     
     return PhotoLargeGalleryView(window: window, photoType: .exterior)
         .environment(\.managedObjectContext, context)

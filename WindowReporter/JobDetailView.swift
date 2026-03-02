@@ -158,6 +158,25 @@ private func formatAddress(job: Job) -> String {
     return components.isEmpty ? "No address" : components.joined(separator: ", ")
 }
 
+/// Ensures every window on the job has a distinct displayOrder (one-time migration for existing data).
+/// If all windows have displayOrder == 0, assigns 0, 1, 2, ... by createdAt.
+private func ensureDisplayOrderForJob(_ job: Job, context: NSManagedObjectContext) {
+    guard let set = job.windows, let windows = set.allObjects as? [Window], !windows.isEmpty else { return }
+    let orders = Set(windows.map { $0.displayOrder })
+    guard orders.count == 1, orders.first == 0 else { return }
+    let sorted = windows.sorted { ($0.createdAt ?? .distantPast) < ($1.createdAt ?? .distantPast) }
+    for (i, w) in sorted.enumerated() {
+        w.displayOrder = Int32(i)
+    }
+    try? context.save()
+}
+
+/// Returns job's windows sorted by displayOrder (ascending).
+private func windowsInDisplayOrder(for job: Job) -> [Window] {
+    guard let set = job.windows, let list = set.allObjects as? [Window] else { return [] }
+    return list.sorted { $0.displayOrder < $1.displayOrder }
+}
+
 /// Forces NSScrollView to use legacy scroller style (always-visible scrollbars) on macOS.
 private struct LegacyScrollbarsModifier: ViewModifier {
     func body(content: Content) -> some View {
@@ -760,32 +779,94 @@ struct WindowsListView: View {
     let job: Job
     @Environment(\.managedObjectContext) private var viewContext
     
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                if let windows = job.windows?.allObjects as? [Window], !windows.isEmpty {
-                    ForEach(windows.sorted(by: { ($0.windowNumber ?? "") < ($1.windowNumber ?? "") }), id: \.objectID) { window in
-                        WindowRowView(window: window)
-                    }
-                } else {
-                    VStack(spacing: 16) {
-                        Image(systemName: "square.grid.3x3")
-                            .font(.system(size: 60))
-                            .foregroundColor(.secondary)
-                        Text("No Windows")
-                            .font(.title2)
-                        Text("Add windows to this job")
-                            .foregroundColor(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding()
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding()
+    private var sortedWindows: [Window] {
+        windowsInDisplayOrder(for: job)
+    }
+    
+    private func moveUp(at index: Int) {
+        guard index > 0 else { return }
+        var arr = sortedWindows
+        arr.swapAt(index, index - 1)
+        for (i, w) in arr.enumerated() {
+            w.displayOrder = Int32(i)
         }
-        .scrollIndicators(.visible)
-        .scrollIndicatorsFlash(onAppear: true)
+        guard (try? viewContext.save()) != nil else { return }
+        viewContext.processPendingChanges()
+        viewContext.refresh(job, mergeChanges: true)
+        for w in arr { viewContext.refresh(w, mergeChanges: true) }
+    }
+    
+    private func moveDown(at index: Int) {
+        guard index < sortedWindows.count - 1 else { return }
+        var arr = sortedWindows
+        arr.swapAt(index, index + 1)
+        for (i, w) in arr.enumerated() {
+            w.displayOrder = Int32(i)
+        }
+        guard (try? viewContext.save()) != nil else { return }
+        viewContext.processPendingChanges()
+        viewContext.refresh(job, mergeChanges: true)
+        for w in arr { viewContext.refresh(w, mergeChanges: true) }
+    }
+    
+    var body: some View {
+        Group {
+            if sortedWindows.isEmpty {
+                VStack(spacing: 16) {
+                    Image(systemName: "square.grid.3x3")
+                        .font(.system(size: 60))
+                        .foregroundColor(.secondary)
+                    Text("No Windows")
+                        .font(.title2)
+                    Text("Add windows to this job")
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding()
+            } else {
+                List {
+                    ForEach(Array(sortedWindows.enumerated()), id: \.element.objectID) { index, window in
+                        ZStack(alignment: .leading) {
+                            HStack(spacing: 0) {
+                                Color.clear.frame(width: 44, height: 1)
+                                WindowRowView(window: window)
+                            }
+                            VStack(spacing: 2) {
+                                Button {
+                                    moveUp(at: index)
+                                } label: {
+                                    Image(systemName: "chevron.up")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .frame(width: 24, height: 20)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(index == 0)
+                                .opacity(index == 0 ? 0.4 : 1)
+                                Button {
+                                    moveDown(at: index)
+                                } label: {
+                                    Image(systemName: "chevron.down")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .frame(width: 24, height: 20)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(index == sortedWindows.count - 1)
+                                .opacity(index == sortedWindows.count - 1 ? 0.4 : 1)
+                            }
+                            .frame(width: 44, alignment: .leading)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                .scrollIndicators(.visible)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            ensureDisplayOrderForJob(job, context: viewContext)
+        }
         .modifier(LegacyScrollbarsModifier())
     }
 }
@@ -1019,16 +1100,19 @@ private struct OverheadImageContentView: View {
     
     /// Dots positioned in geometry coordinates using same transform as LocationMarkerView.
     /// Uses scaledLeft=0, scaledTop=0 to match LocationMarkerView's top-leading image layout.
+    /// Dot labels show 1-based display order (not windowNumber).
     @ViewBuilder
     private func dotsOverlay(contentOrigin: CGPoint, scaleToFill: CGFloat, fitScale: CGFloat) -> some View {
-        let windowsWithPositions = windows.filter { $0.xPosition > 0 && $0.yPosition > 0 }
+        let indexedWithPositions: [(Window, Int)] = windows.enumerated().compactMap { offset, window in
+            (window.xPosition > 0 && window.yPosition > 0) ? (window, offset + 1) : nil
+        }
         let imgSize = overheadImagePixelSize(image)
         let fittedSize = imageFittedToFrameSize
         let fs = frameSize
         let containerSize = transformContainerSize
         if imgSize.width > 0, imgSize.height > 0, fittedSize.width > 0, fittedSize.height > 0 {
             ZStack(alignment: .topLeading) {
-                ForEach(windowsWithPositions, id: \.objectID) { window in
+                ForEach(indexedWithPositions, id: \.0.objectID) { window, displayIndex in
                     let location = CGPoint(x: window.xPosition, y: window.yPosition)
                     let (geometryX, geometryY) = overheadDotPositionToGeometry(
                         location: location,
@@ -1043,7 +1127,7 @@ private struct OverheadImageContentView: View {
                         scaleToFill: scaleToFill,
                         contentOrigin: contentOrigin
                     )
-                    OverheadCanvasWindowDotView(window: window)
+                    OverheadCanvasWindowDotView(window: window, displayIndex: displayIndex)
                         .position(x: geometryX, y: geometryY)
                         .allowsHitTesting(false)
                 }
@@ -1063,8 +1147,7 @@ struct OverheadCanvasView: View {
     @State private var locationsRefreshID = UUID()
     
     private var windows: [Window] {
-        guard let windowsSet = job.windows else { return [] }
-        return (windowsSet.allObjects as? [Window] ?? []).sorted { ($0.windowNumber ?? "") < ($1.windowNumber ?? "") }
+        windowsInDisplayOrder(for: job)
     }
     
     var body: some View {
@@ -1113,6 +1196,7 @@ struct OverheadCanvasView: View {
         .padding()
         .onAppear {
             loadImage()
+            ensureDisplayOrderForJob(job, context: viewContext)
             // Refresh job and windows when Locations tab appears so placed dots show
             // (user may have placed dots while on Windows tab, so onReceive never ran)
             viewContext.refresh(job, mergeChanges: true)
@@ -1234,8 +1318,10 @@ struct OverheadCanvasView: View {
 }
 
 /// Dot view for OverheadCanvasView - parent positions via .position()
+/// Label shows 1-based display order (displayIndex), not the specimen name.
 struct OverheadCanvasWindowDotView: View {
     let window: Window
+    let displayIndex: Int
     
     var body: some View {
         ZStack {
@@ -1248,11 +1334,9 @@ struct OverheadCanvasWindowDotView: View {
                 )
                 .frame(width: 44, height: 44)
             
-            if let windowNumber = window.windowNumber {
-                Text(OverheadCanvasWindowDotView.extractNumberFromSpecimenName(windowNumber))
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(window.isInaccessible ? .black : .white)
-            }
+            Text("\(displayIndex)")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(window.isInaccessible ? .black : .white)
         }
     }
     
@@ -1266,13 +1350,6 @@ struct OverheadCanvasWindowDotView: View {
         } else {
             return .blue
         }
-    }
-    
-    private static func extractNumberFromSpecimenName(_ name: String) -> String {
-        if let numberRange = name.range(of: #"\d+"#, options: .regularExpression) {
-            return String(name[numberRange])
-        }
-        return name
     }
 }
 
