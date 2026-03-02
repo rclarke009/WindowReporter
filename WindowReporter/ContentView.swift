@@ -31,6 +31,7 @@ struct ContentView: View {
     @State private var selectedJob: Job?
     @State private var showingDeleteConfirmation = false
     @State private var jobsToDelete: [Job] = []
+    @State private var sidebarRefreshId = UUID()
     @AppStorage("jobsSortOrder") private var jobsSortOrderRaw: String = JobSortOrder.newestFirst.rawValue
     @AppStorage("jobsListFilter") private var selectedFilterRaw: String = JobListFilter.inProgress.rawValue
 
@@ -83,6 +84,7 @@ struct ContentView: View {
         NavigationSplitView {
             SidebarView(
                 jobs: filteredJobs,
+                sidebarRefreshId: sidebarRefreshId,
                 jobsListFilterRaw: $selectedFilterRaw,
                 isFullListEmpty: sortedJobs.isEmpty,
                 jobsSortOrderRaw: $jobsSortOrderRaw,
@@ -164,6 +166,16 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .createNewJob)) { _ in
             showingCreateJobSheet = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .jobDataUpdated)) { notification in
+            if let updatedJob = notification.object as? Job {
+                DispatchQueue.main.async {
+                    viewContext.refresh(updatedJob, mergeChanges: true)
+                    sidebarRefreshId = UUID()
+                }
+            } else {
+                sidebarRefreshId = UUID()
+            }
+        }
     }
 
     private func deleteJobs(offsets: IndexSet) {
@@ -200,6 +212,7 @@ struct ContentView: View {
 
 struct SidebarView: View {
     let jobs: [Job]
+    let sidebarRefreshId: UUID
     @Binding var jobsListFilterRaw: String
     let isFullListEmpty: Bool
     @Binding var jobsSortOrderRaw: String
@@ -301,6 +314,7 @@ struct SidebarView: View {
                 }
             }
         }
+        .id(sidebarRefreshId)
         .navigationTitle("Jobs")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
