@@ -159,12 +159,12 @@ private func formatAddress(job: Job) -> String {
 }
 
 /// Ensures every window on the job has a distinct displayOrder (one-time migration for existing data).
-/// If all windows have displayOrder == 0, assigns 0, 1, 2, ... by createdAt.
+/// If all windows have displayOrder == 0, assigns 0, 1, 2, ... by createdAt (newest first).
 private func ensureDisplayOrderForJob(_ job: Job, context: NSManagedObjectContext) {
     guard let set = job.windows, let windows = set.allObjects as? [Window], !windows.isEmpty else { return }
     let orders = Set(windows.map { $0.displayOrder })
     guard orders.count == 1, orders.first == 0 else { return }
-    let sorted = windows.sorted { ($0.createdAt ?? .distantPast) < ($1.createdAt ?? .distantPast) }
+    let sorted = windows.sorted { ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast) }
     for (i, w) in sorted.enumerated() {
         w.displayOrder = Int32(i)
     }
@@ -174,7 +174,17 @@ private func ensureDisplayOrderForJob(_ job: Job, context: NSManagedObjectContex
 /// Returns job's windows sorted by displayOrder (ascending).
 private func windowsInDisplayOrder(for job: Job) -> [Window] {
     guard let set = job.windows, let list = set.allObjects as? [Window] else { return [] }
-    return list.sorted { $0.displayOrder < $1.displayOrder }
+    let allSameDisplayOrder = Set(list.map { $0.displayOrder }).count == 1
+    if allSameDisplayOrder {
+        return list.sorted { ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast) }
+    }
+
+    return list.sorted {
+        if $0.displayOrder != $1.displayOrder {
+            return $0.displayOrder < $1.displayOrder
+        }
+        return ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast)
+    }
 }
 
 /// True if the string matches "Specimen" + number (e.g. "Specimen 1", "specimen 10").
@@ -3097,4 +3107,3 @@ private struct ReplaceImageOptionsSheet: View {
     JobDetailView(job: Job(context: PersistenceController.preview.container.viewContext))
         .environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)
 }
-

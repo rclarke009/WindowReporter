@@ -1061,7 +1061,7 @@ struct FieldResultsPackage {
     // Table below title - PDF Y increases upward, so "below" = decrease Y (clear gap so title doesn't overlap table)
     let tableYTopDown = titleRect.minY - 25
     let isInaccessible = window.isInaccessible
-    let colWidths: [CGFloat] = isInaccessible ? [100, 80, 200] : [100, 80, 140, 100, 80, 100]
+    let colWidths: [CGFloat] = isInaccessible ? [90, 70, 352] : [90, 60, 105, 90, 70, 97]
     var currentX: CGFloat = 50
     
     let headerFont = NSFont.boldSystemFont(ofSize: 12)
@@ -2526,16 +2526,9 @@ struct FieldResultsPackage {
                 let pixelWidth = CGFloat(cgImage.width)
                 let pixelHeight = CGFloat(cgImage.height)
                 let maxSide = photoSize
-                let imageFitWidth = pixelWidth >= pixelHeight ? maxSide : maxSide * pixelWidth / pixelHeight
-                let imageFitHeight = pixelHeight >= pixelWidth ? maxSide : maxSide * pixelHeight / pixelWidth
-                let imageFitSize = CGSize(width: imageFitWidth, height: imageFitHeight)
-                let fitScale = overheadFitScaleForExport(
-                    imageSize: imageFitSize,
-                    scale: zoomScale,
-                    rotation: Double(rotationDegrees),
-                    containerSize: CGSize(width: maxSide, height: maxSide)
-                )
-                let scale = (imageFitSize.width / pixelWidth) * zoomScale * fitScale
+                // Fill the square photo slot and center-crop overflow to avoid any stretch/squish.
+                let baseScale = max(maxSide / pixelWidth, maxSide / pixelHeight)
+                let scale = baseScale * zoomScale
                 let clampedPanX: CGFloat
                 let clampedPanY: CGFloat
                 if hasZoomPan {
@@ -2550,7 +2543,7 @@ struct FieldResultsPackage {
                 photoTransform = (pixelWidth, pixelHeight, scale, clampedPanX, clampedPanY)
                 drawTransformedImage(cgImage: cgImage, in: imageRectBottomUp, context: context, scale: scale, panX: clampedPanX, panY: clampedPanY, rotation: rotationRadians)
             } else {
-                drawNSImageAspectFit(processedImage, in: imageRectBottomUp, context: context)
+                drawNSImageAspectFill(processedImage, in: imageRectBottomUp, context: context)
             }
             
             let arrowX = photoData.photo.arrowXPosition
@@ -7533,4 +7526,3 @@ extension FieldResultsPackage {
         }
     }
 }
-
