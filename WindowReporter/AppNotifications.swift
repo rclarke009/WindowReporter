@@ -11,4 +11,7 @@ extension Notification.Name {
     static let createNewJob = Notification.Name("createNewJob")
     static let newJobCreated = Notification.Name("newJobCreated")
     static let jobDataUpdated = Notification.Name("jobDataUpdated")
+    static let photoNoteCategoriesUpdated = Notification.Name("photoNoteCategoriesUpdated")
+    static let teamCustomizationsDidSync = Notification.Name("teamCustomizationsDidSync")
+    static let backupAllJobsRequested = Notification.Name("backupAllJobsRequested")
 }

@@ -18,6 +18,7 @@ struct CreateJobView: View {
     
     @State private var jobId: String = ""
     @State private var clientName: String = ""
+    @State private var tenantName: String = ""
     @State private var addressLine1: String = ""
     @State private var city: String = ""
     @State private var state: String = ""
@@ -42,6 +43,7 @@ struct CreateJobView: View {
                 Section("Job Information") {
                     TextField("Report ID", text: $jobId, prompt: Text("W2025-11001"))
                     TextField("Client Name", text: $clientName)
+                    TextField("Tenant Name", text: $tenantName)
                     TextField("Address Line 1", text: $addressLine1)
                     HStack {
                         TextField("City", text: $city)
@@ -113,6 +115,9 @@ struct CreateJobView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Report ID: \(jobId.isEmpty ? "Not specified" : jobId)")
                         Text("Client: \(clientName.isEmpty ? "Not specified" : clientName)")
+                        if !tenantName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Text("Tenant: \(tenantName)")
+                        }
                         Text("Address: \(addressLine1.isEmpty ? "Not specified" : addressLine1), \(city.isEmpty ? "City" : city), \(state.isEmpty ? "ST" : state) \(zip.isEmpty ? "00000" : zip)")
                         Text("Inspector: \(inspectorName.isEmpty ? "Not specified" : inspectorName)")
                         Text("Date: \(inspectionDate, formatter: dateFormatter)")
@@ -191,6 +196,7 @@ struct CreateJobView: View {
         let newJob = Job(context: viewContext)
         newJob.jobId = jobId
         newJob.clientName = clientName
+        newJob.tenantName = blankToNil(tenantName)
         newJob.addressLine1 = addressLine1
         newJob.cleanedAddressLine1 = AddressCleaningUtility.cleanAddress(addressLine1)
         newJob.city = city
@@ -207,6 +213,10 @@ struct CreateJobView: View {
         newJob.overheadImageSourceName = overheadImageSourceName.isEmpty ? nil : overheadImageSourceName
         newJob.overheadImageSourceUrl = overheadImageSourceUrl.isEmpty ? nil : overheadImageSourceUrl
         newJob.scalePixelsPerFoot = Double(scalePixelsPerFoot) ?? 10.0
+        let defaultIds = UserDefaults.standard.string(forKey: "defaultEnabledTestingTypeIds")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        newJob.enabledTestingTypeIds = (defaultIds == nil || defaultIds?.isEmpty == true) ? "windows" : defaultIds
+        JobTestingTypeDisplayNameSnapshot.merge(into: newJob, enabledTypeIds: TestingTypesHelper.enabledTypeIds(from: newJob))
+        newJob.testingTypeNotes = UserDefaults.standard.string(forKey: "defaultTestingTypeNotes")
         
         if let image = selectedOverheadImage {
             saveOverheadImage(image, for: newJob)

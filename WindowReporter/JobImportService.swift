@@ -13,6 +13,13 @@ import Combine
 
 // MARK: - Data Models (same as iPad version)
 
+struct ImportedPhotoNoteCategoriesPackage: Codable {
+    let version: String
+    let exportedAt: Double
+    let exportedBy: String?
+    let photoNoteCategories: PhotoNoteCategoriesPayload
+}
+
 struct JobIntakePackage: Codable {
     let version: String
     let createdAt: Double
@@ -59,6 +66,8 @@ struct FullJobPackage: Codable {
     struct FullJobData: Codable {
         let jobId: String
         let clientName: String?
+        /// Occupant name. Older packages omit this key; decoding leaves it nil.
+        let tenantName: String?
         let addressLine1: String?
         let cleanedAddressLine1: String?
         let city: String?
@@ -99,8 +108,53 @@ struct FullJobPackage: Codable {
         let includeEngineeringLetter: Bool?
         let includeWeatherInReport: Bool?
         let customWeatherText: String?
+        let namedStormWeatherSource: String?
         let customHurricaneImageFile: String?
+        let customPurposeText: String?
+        let customObservationsText: String?
+        let customTestPerformedText: String?
+        let customBackgroundInformationText: String?
+        let customRecommendationsText: String?
+        let customEngineeringLetterParagraph2: String?
+        let includePageNumbersInReport: Bool?
+        let includeAddressInReport: Bool?
+        let reportStartingPageNumber: Int?
+        let enabledTestingTypeIds: String?
+        let testingTypeNotes: String?
+        let testingTypeDisplayNamesByIdJSON: String?
+        let enabledGroupIds: String?
+        /// Photo note categories and caption options for the field app (WindowTest). Key = PhotoType.rawValue.
+        let photoNoteCategories: PhotoNoteCategoriesPayload?
         let windows: [FullWindowData]
+        let specimenSections: [FullSpecimenSectionData]?
+    }
+    
+    struct FullSpecimenSectionData: Codable {
+        let sectionId: String
+        let testingTypeId: String
+        let sectionName: String?
+        let displayOrder: Int?
+        let xPosition: Double
+        let yPosition: Double
+        let notes: String?
+        let result: String?
+        let customFieldsJSON: String?
+        let createdAt: Double?
+        let updatedAt: Double?
+        let sectionPhotos: [FullSectionPhotoData]
+    }
+    
+    struct FullSectionPhotoData: Codable {
+        let photoId: String
+        let photoType: String
+        let imageFile: String
+        let notes: String?
+        let arrowXPosition: Double?
+        let arrowYPosition: Double?
+        let arrowDirection: String?
+        let rotationDegrees: Double?
+        let includeInReport: Bool
+        let createdAt: Double?
     }
     
     struct FullWindowData: Codable {
@@ -115,6 +169,8 @@ struct FullJobPackage: Codable {
         let testResult: String?
         let leakPoints: Int16
         let isInaccessible: Bool
+        /// Reason window was not tested. Optional for backward compatibility.
+        let untestedReason: String?
         let notes: String?
         let testStartTime: Double?
         let testStopTime: Double?
@@ -139,6 +195,15 @@ struct FullJobPackage: Codable {
     }
 }
 
+/// Specimen package: one or more windows + photos for a single job (add-on → main user transfer).
+struct SpecimenPackage: Codable {
+    let version: String
+    let jobId: String
+    let exportedAt: Double
+    let exportedBy: String?
+    let specimens: [FullJobPackage.FullWindowData]
+}
+
 // MARK: - Import Service
 
 class JobImportService: ObservableObject {
@@ -152,6 +217,8 @@ class JobImportService: ObservableObject {
     enum PackageType: String {
         case jobIntake = "Job Intake Package"
         case fullJob = "Full Job Package"
+        case specimen = "Specimen Package"
+        case photoNoteCategories = "Photo Note Categories Package"
         
         var description: String {
             switch self {
@@ -159,6 +226,10 @@ class JobImportService: ObservableObject {
                 return "Starter file from Desktop Scraper (address and overhead image only)"
             case .fullJob:
                 return "Complete job with field photos, windows, measurements, and test results"
+            case .specimen:
+                return "One or more specimens from add-on user to merge into a job"
+            case .photoNoteCategories:
+                return "Photo note categories and caption options to apply in this app"
             }
         }
         
@@ -168,6 +239,10 @@ class JobImportService: ObservableObject {
                 return "doc.badge.plus"
             case .fullJob:
                 return "doc.badge.gearshape"
+            case .specimen:
+                return "square.and.arrow.down"
+            case .photoNoteCategories:
+                return "text.badge.plus"
             }
         }
     }
@@ -187,6 +262,14 @@ class JobImportService: ObservableObject {
     
     @Published var pendingDuplicateResolution: PendingDuplicateResolution?
     
+    /// When importing a specimen package and no job matches jobId, user must pick target job or create new.
+    struct PendingSpecimenResolution {
+        let package: SpecimenPackage
+        let directory: URL
+        let isTempDirectory: Bool
+    }
+    @Published var pendingSpecimenResolution: PendingSpecimenResolution?
+    
     private let context: NSManagedObjectContext
     private let documentsDirectory: URL
     private let photoImportService: macOSPhotoImportService
@@ -204,6 +287,7 @@ class JobImportService: ObservableObject {
             importProgress = 0.0
             detectedPackageType = nil
             pendingDuplicateResolution = nil
+            pendingSpecimenResolution = nil
         }
         
         do {
@@ -241,6 +325,8 @@ class JobImportService: ObservableObject {
             // Check for JSON files (with and without "private" prefix, like iPad version)
             let fullJobPackageURL = tempDirectory.appendingPathComponent("full-job-package.json")
             let privateFullJobPackageURL = tempDirectory.appendingPathComponent("privatefull-job-package.json")
+            let categoriesPackageURL = tempDirectory.appendingPathComponent("photo-note-categories-package.json")
+            let privateCategoriesPackageURL = tempDirectory.appendingPathComponent("privatephoto-note-categories-package.json")
             let jobsJSONURL = tempDirectory.appendingPathComponent("jobs.json")
             
             print("🔍 Checking for JSON files:")
@@ -248,6 +334,10 @@ class JobImportService: ObservableObject {
             print("   exists: \(FileManager.default.fileExists(atPath: fullJobPackageURL.path))")
             print("   privatefull-job-package.json at: \(privateFullJobPackageURL.path)")
             print("   exists: \(FileManager.default.fileExists(atPath: privateFullJobPackageURL.path))")
+            print("   photo-note-categories-package.json at: \(categoriesPackageURL.path)")
+            print("   exists: \(FileManager.default.fileExists(atPath: categoriesPackageURL.path))")
+            print("   privatephoto-note-categories-package.json at: \(privateCategoriesPackageURL.path)")
+            print("   exists: \(FileManager.default.fileExists(atPath: privateCategoriesPackageURL.path))")
             print("   jobs.json at: \(jobsJSONURL.path)")
             print("   exists: \(FileManager.default.fileExists(atPath: jobsJSONURL.path))")
             
@@ -278,6 +368,45 @@ class JobImportService: ObservableObject {
                 } else {
                     await MainActor.run { isImporting = false }
                 }
+            } else if FileManager.default.fileExists(atPath: tempDirectory.appendingPathComponent("specimen-package.json").path) ||
+                      FileManager.default.fileExists(atPath: tempDirectory.appendingPathComponent("privatespecimen-package.json").path) {
+                await MainActor.run {
+                    detectedPackageType = .specimen
+                    importProgress = 0.3
+                }
+                let result = try await importSpecimenPackage(from: tempDirectory, isTempDirectory: isTempDirectory)
+                if let (importedJob, count) = result {
+                    if isTempDirectory {
+                        try? FileManager.default.removeItem(at: tempDirectory)
+                    }
+                    await MainActor.run {
+                        importProgress = 1.0
+                        isImporting = false
+                        self.importedJobs = [importedJob]
+                        importRefreshId = UUID()
+                        NotificationCenter.default.post(name: .jobDataUpdated, object: importedJob)
+                    }
+                    print("MYDEBUG → JobImportService - Imported \(count) specimen(s) into job \(importedJob.jobId ?? "?")")
+                } else {
+                    await MainActor.run { isImporting = false }
+                }
+            } else if FileManager.default.fileExists(atPath: categoriesPackageURL.path) ||
+                      FileManager.default.fileExists(atPath: privateCategoriesPackageURL.path) {
+                await MainActor.run {
+                    detectedPackageType = .photoNoteCategories
+                    importProgress = 0.3
+                }
+                try await importPhotoNoteCategoriesPackage(from: tempDirectory)
+                if isTempDirectory {
+                    try? FileManager.default.removeItem(at: tempDirectory)
+                }
+                await MainActor.run {
+                    importProgress = 1.0
+                    isImporting = false
+                    importedJobs = []
+                    importRefreshId = UUID()
+                    NotificationCenter.default.post(name: .photoNoteCategoriesUpdated, object: nil)
+                }
             } else if FileManager.default.fileExists(atPath: jobsJSONURL.path) {
                 await MainActor.run {
                     detectedPackageType = .jobIntake
@@ -296,7 +425,7 @@ class JobImportService: ObservableObject {
                     }
                 }
             } else {
-                throw ImportError.missingJobsJSON
+                throw ImportError.unknownPackageType
             }
         } catch {
             await MainActor.run {
@@ -354,11 +483,19 @@ class JobImportService: ObservableObject {
             let fullJobJSON = directory.appendingPathComponent("full-job-package.json")
             let privateFullJobJSON = directory.appendingPathComponent("privatefull-job-package.json")
             let jobsJSON = directory.appendingPathComponent("jobs.json")
+            let specimenJSON = directory.appendingPathComponent("specimen-package.json")
+            let privateSpecimenJSON = directory.appendingPathComponent("privatespecimen-package.json")
+            let photoNoteCategoriesJSON = directory.appendingPathComponent("photo-note-categories-package.json")
+            let privatePhotoNoteCategoriesJSON = directory.appendingPathComponent("privatephoto-note-categories-package.json")
             
             // Check for JSON files
             if FileManager.default.fileExists(atPath: fullJobJSON.path) ||
                FileManager.default.fileExists(atPath: privateFullJobJSON.path) ||
-               FileManager.default.fileExists(atPath: jobsJSON.path) {
+               FileManager.default.fileExists(atPath: jobsJSON.path) ||
+               FileManager.default.fileExists(atPath: specimenJSON.path) ||
+               FileManager.default.fileExists(atPath: privateSpecimenJSON.path) ||
+               FileManager.default.fileExists(atPath: photoNoteCategoriesJSON.path) ||
+               FileManager.default.fileExists(atPath: privatePhotoNoteCategoriesJSON.path) {
                 print("✅ Found JSON directory at depth \(currentDepth): \(directory.path)")
                 return directory
             }
@@ -408,6 +545,38 @@ class JobImportService: ObservableObject {
             }
             throw ImportError.invalidJSONFormat
         }
+    }
+
+    private func importPhotoNoteCategoriesPackage(from directory: URL) async throws {
+        var packageURL = directory.appendingPathComponent("photo-note-categories-package.json")
+        if !FileManager.default.fileExists(atPath: packageURL.path) {
+            let privateURL = directory.appendingPathComponent("privatephoto-note-categories-package.json")
+            if FileManager.default.fileExists(atPath: privateURL.path) {
+                packageURL = privateURL
+                print("✅ Using photo-note-categories-package.json with iOS 'private' prefix")
+            }
+        }
+
+        guard FileManager.default.fileExists(atPath: packageURL.path) else {
+            throw ImportError.missingPhotoNoteCategoriesPackage
+        }
+
+        let data = try Data(contentsOf: packageURL)
+        let decoder = JSONDecoder()
+        let package: ImportedPhotoNoteCategoriesPackage
+        do {
+            package = try decoder.decode(ImportedPhotoNoteCategoriesPackage.self, from: data)
+        } catch {
+            print("❌ Failed to decode photo note categories package: \(error)")
+            throw ImportError.invalidPhotoNoteCategoriesPackageFormat
+        }
+
+        guard !package.photoNoteCategories.isEmpty else {
+            throw ImportError.invalidPhotoNoteCategoriesPackageFormat
+        }
+
+        try persistImportedPhotoNoteCategories(package.photoNoteCategories)
+        print("✅ Imported photo note categories package with \(package.photoNoteCategories.count) photo types")
     }
     
     private func processJobs(_ package: JobIntakePackage, from directory: URL) async throws -> [Job] {
@@ -551,6 +720,7 @@ class JobImportService: ObservableObject {
         let job = Job(context: context)
         job.jobId = package.job.jobId
         job.clientName = package.job.clientName
+        job.tenantName = package.job.tenantName
         job.addressLine1 = package.job.addressLine1
         job.cleanedAddressLine1 = package.job.cleanedAddressLine1 ?? AddressCleaningUtility.cleanAddress(package.job.addressLine1 ?? "")
         job.city = package.job.city
@@ -581,9 +751,41 @@ class JobImportService: ObservableObject {
         job.includeEngineeringLetter = package.job.includeEngineeringLetter ?? false
         job.includeWeatherInReport = package.job.includeWeatherInReport ?? true
         job.customWeatherText = package.job.customWeatherText
-        
+        job.namedStormWeatherSource = package.job.namedStormWeatherSource
+        job.customPurposeText = package.job.customPurposeText
+        job.customObservationsText = package.job.customObservationsText
+        job.customTestPerformedText = package.job.customTestPerformedText
+        job.customBackgroundInformationText = package.job.customBackgroundInformationText
+        job.customRecommendationsText = package.job.customRecommendationsText
+        job.customEngineeringLetterParagraph2 = package.job.customEngineeringLetterParagraph2
+        job.includePageNumbersInReport = package.job.includePageNumbersInReport ?? true
+        job.includeAddressInReport = package.job.includeAddressInReport ?? true
+        job.reportStartingPageNumber = Int32(max(1, package.job.reportStartingPageNumber ?? 1))
+        job.enabledTestingTypeIds = package.job.enabledTestingTypeIds
+        job.testingTypeNotes = package.job.testingTypeNotes
+        job.testingTypeDisplayNamesByIdJSON = package.job.testingTypeDisplayNamesByIdJSON
+        job.enabledGroupIds = package.job.enabledGroupIds
+        if let categories = package.job.photoNoteCategories, !categories.isEmpty {
+            try persistImportedPhotoNoteCategories(categories)
+        }
+        JobTestingTypeDisplayNameSnapshot.merge(into: job, enabledTypeIds: TestingTypesHelper.enabledTypeIds(from: job))
+
         try await applyFullJobPackage(package, from: directory, to: job)
         return job
+    }
+
+    private func persistImportedPhotoNoteCategories(_ payload: PhotoNoteCategoriesPayload) throws {
+        guard !payload.isEmpty else { return }
+
+        let appSupportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("WindowReporter", isDirectory: true)
+        try FileManager.default.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
+
+        let fileURL = appSupportDirectory.appendingPathComponent("PhotoNoteCategories.json")
+        let data = try JSONEncoder().encode(payload)
+        try data.write(to: fileURL)
+
+        NotificationCenter.default.post(name: .photoNoteCategoriesUpdated, object: nil)
     }
     
     private func applyFullJobPackage(_ package: FullJobPackage, from directory: URL, to job: Job) async throws {
@@ -658,9 +860,22 @@ class JobImportService: ObservableObject {
                 window.testResult = windowData.testResult
                 window.leakPoints = windowData.leakPoints
                 window.isInaccessible = windowData.isInaccessible
+                if window.entity.attributesByName["untestedReason"] != nil {
+                    window.setValue(windowData.untestedReason, forKey: "untestedReason")
+                }
                 window.notes = windowData.notes
-                window.testStartTime = windowData.testStartTime.map { Date(timeIntervalSince1970: $0) }
-                window.testStopTime = windowData.testStopTime.map { Date(timeIntervalSince1970: $0) }
+                let existingHasTimes = window.testStartTime != nil || window.testStopTime != nil
+                let packageHasTimes = windowData.testStartTime != nil || windowData.testStopTime != nil
+                if existingHasTimes && packageHasTimes {
+                    let prefRaw = UserDefaults.standard.string(forKey: "timerConflictPreference") ?? "main"
+                    if prefRaw == "addOn" {
+                        window.testStartTime = windowData.testStartTime.map { Date(timeIntervalSince1970: $0) }
+                        window.testStopTime = windowData.testStopTime.map { Date(timeIntervalSince1970: $0) }
+                    }
+                } else {
+                    window.testStartTime = windowData.testStartTime.map { Date(timeIntervalSince1970: $0) }
+                    window.testStopTime = windowData.testStopTime.map { Date(timeIntervalSince1970: $0) }
+                }
                 window.displayOrder = Int32(orderFromFile)
                 window.updatedAt = Date()
                 // Replace path: remove existing photos so imported package photos don't duplicate
@@ -682,6 +897,9 @@ class JobImportService: ObservableObject {
                 window.testResult = windowData.testResult
                 window.leakPoints = windowData.leakPoints
                 window.isInaccessible = windowData.isInaccessible
+                if window.entity.attributesByName["untestedReason"] != nil {
+                    window.setValue(windowData.untestedReason, forKey: "untestedReason")
+                }
                 window.notes = windowData.notes
                 window.testStartTime = windowData.testStartTime.map { Date(timeIntervalSince1970: $0) }
                 window.testStopTime = windowData.testStopTime.map { Date(timeIntervalSince1970: $0) }
@@ -718,6 +936,31 @@ class JobImportService: ObservableObject {
             await MainActor.run { importProgress = progress }
         }
         
+        // Import specimen sections (roof, floors, etc.) if present
+        if let sectionDatas = package.job.specimenSections, !sectionDatas.isEmpty {
+            let sectionCount = sectionDatas.count
+            for (sectionIndex, sectionData) in sectionDatas.enumerated() {
+                let section = SpecimenSection(context: context)
+                section.sectionId = sectionData.sectionId
+                section.testingTypeId = sectionData.testingTypeId
+                section.sectionName = sectionData.sectionName
+                section.displayOrder = Int32(sectionData.displayOrder ?? 0)
+                section.xPosition = sectionData.xPosition
+                section.yPosition = sectionData.yPosition
+                section.notes = sectionData.notes
+                section.result = sectionData.result
+                section.customFieldsJSON = sectionData.customFieldsJSON
+                section.createdAt = sectionData.createdAt.map { Date(timeIntervalSince1970: $0) } ?? Date()
+                section.updatedAt = Date()
+                section.job = job
+                for (_, photoData) in sectionData.sectionPhotos.enumerated() {
+                    try await importSectionPhoto(from: directory, photoData: photoData, for: section)
+                }
+                let progress = 0.9 + (Double(sectionIndex + 1) / Double(sectionCount)) * 0.1
+                await MainActor.run { importProgress = progress }
+            }
+        }
+        
         // Refresh all windows before final save
         print("MYDEBUG → JobImportService - Refreshing all windows before final save")
         for windowData in package.job.windows {
@@ -746,6 +989,154 @@ class JobImportService: ObservableObject {
         }
     }
     
+    // MARK: - Specimen Package Import
+    
+    /// Returns (job, specimenCount) when import completed; nil when pendingSpecimenResolution was set (no matching job).
+    private func importSpecimenPackage(from directory: URL, isTempDirectory: Bool) async throws -> (Job, Int)? {
+        var packageURL = directory.appendingPathComponent("specimen-package.json")
+        if !FileManager.default.fileExists(atPath: packageURL.path) {
+            let privateURL = directory.appendingPathComponent("privatespecimen-package.json")
+            if FileManager.default.fileExists(atPath: privateURL.path) {
+                packageURL = privateURL
+                print("MYDEBUG → JobImportService - Using specimen-package.json with iOS 'private' prefix")
+            }
+        }
+        guard FileManager.default.fileExists(atPath: packageURL.path) else {
+            throw ImportError.missingSpecimenPackage
+        }
+        let data = try Data(contentsOf: packageURL)
+        let decoder = JSONDecoder()
+        let package: SpecimenPackage
+        do {
+            package = try decoder.decode(SpecimenPackage.self, from: data)
+        } catch {
+            print("MYDEBUG → JobImportService - Failed to decode specimen package: \(error)")
+            throw ImportError.invalidSpecimenPackageFormat
+        }
+        guard !package.specimens.isEmpty else {
+            throw ImportError.invalidSpecimenPackageFormat
+        }
+        
+        let fetchRequest: NSFetchRequest<Job> = Job.fetchRequest()
+        fetchRequest.predicate = NSPredicate(format: "jobId == %@", package.jobId)
+        fetchRequest.fetchLimit = 1
+        let existingJobs = try context.fetch(fetchRequest)
+        
+        if let job = existingJobs.first {
+            try await applySpecimenPackage(package, from: directory, to: job)
+            return (job, package.specimens.count)
+        }
+        
+        await MainActor.run {
+            pendingSpecimenResolution = PendingSpecimenResolution(
+                package: package,
+                directory: directory,
+                isTempDirectory: isTempDirectory
+            )
+        }
+        return nil
+    }
+    
+    /// Merge specimen package into an existing job. Call after user picks target job or create new.
+    func importSpecimenPackageInto(_ job: Job, from pending: PendingSpecimenResolution) async throws -> Int {
+        defer {
+            Task { @MainActor in
+                pendingSpecimenResolution = nil
+            }
+        }
+        try await applySpecimenPackage(pending.package, from: pending.directory, to: job)
+        return pending.package.specimens.count
+    }
+    
+    func cancelSpecimenResolution() {
+        pendingSpecimenResolution = nil
+    }
+    
+    private func applySpecimenPackage(_ package: SpecimenPackage, from directory: URL, to job: Job) async throws {
+        await MainActor.run { importProgress = 0.5 }
+        let existingWindowIds = Set((job.windows?.allObjects as? [Window])?.compactMap { $0.windowId } ?? [])
+        let maxOrder = (job.windows?.allObjects as? [Window])?.map { Int($0.displayOrder) }.max() ?? -1
+        
+        for (index, windowData) in package.specimens.enumerated() {
+            let fetchRequest: NSFetchRequest<Window> = Window.fetchRequest()
+            fetchRequest.predicate = NSPredicate(format: "windowId == %@ AND job == %@", windowData.windowId, job)
+            fetchRequest.fetchLimit = 1
+            let existingWindows = try context.fetch(fetchRequest)
+            let orderFromFile = windowData.displayOrder ?? index
+            let displayOrder = Int32(existingWindowIds.contains(windowData.windowId) ? orderFromFile : maxOrder + 1 + index)
+            
+            let window: Window
+            if let existingWindow = existingWindows.first {
+                window = existingWindow
+                window.windowNumber = windowData.windowNumber
+                window.xPosition = windowData.xPosition
+                window.yPosition = windowData.yPosition
+                window.width = windowData.width
+                window.height = windowData.height
+                window.windowType = windowData.windowType
+                window.material = windowData.material
+                window.testResult = windowData.testResult
+                window.leakPoints = windowData.leakPoints
+                window.isInaccessible = windowData.isInaccessible
+                if window.entity.attributesByName["untestedReason"] != nil {
+                    window.setValue(windowData.untestedReason, forKey: "untestedReason")
+                }
+                window.notes = windowData.notes
+                // Timer conflict: both have times -> use preference (from UserDefaults)
+                let existingHasTimes = window.testStartTime != nil || window.testStopTime != nil
+                let packageHasTimes = windowData.testStartTime != nil || windowData.testStopTime != nil
+                if existingHasTimes && packageHasTimes {
+                    let prefRaw = UserDefaults.standard.string(forKey: "timerConflictPreference") ?? "main"
+                    if prefRaw == "addOn" {
+                        window.testStartTime = windowData.testStartTime.map { Date(timeIntervalSince1970: $0) }
+                        window.testStopTime = windowData.testStopTime.map { Date(timeIntervalSince1970: $0) }
+                    }
+                } else {
+                    window.testStartTime = windowData.testStartTime.map { Date(timeIntervalSince1970: $0) }
+                    window.testStopTime = windowData.testStopTime.map { Date(timeIntervalSince1970: $0) }
+                }
+                window.displayOrder = displayOrder
+                window.updatedAt = Date()
+                if let existingPhotos = window.photos?.allObjects as? [Photo] {
+                    for photo in existingPhotos { context.delete(photo) }
+                }
+            } else {
+                window = Window(context: context)
+                window.windowId = windowData.windowId
+                window.windowNumber = windowData.windowNumber
+                window.xPosition = windowData.xPosition
+                window.yPosition = windowData.yPosition
+                window.width = windowData.width
+                window.height = windowData.height
+                window.windowType = windowData.windowType
+                window.material = windowData.material
+                window.testResult = windowData.testResult
+                window.leakPoints = windowData.leakPoints
+                window.isInaccessible = windowData.isInaccessible
+                if window.entity.attributesByName["untestedReason"] != nil {
+                    window.setValue(windowData.untestedReason, forKey: "untestedReason")
+                }
+                window.notes = windowData.notes
+                window.testStartTime = windowData.testStartTime.map { Date(timeIntervalSince1970: $0) }
+                window.testStopTime = windowData.testStopTime.map { Date(timeIntervalSince1970: $0) }
+                window.createdAt = windowData.createdAt.map { Date(timeIntervalSince1970: $0) } ?? Date()
+                window.updatedAt = Date()
+                window.displayOrder = displayOrder
+                window.job = job
+            }
+            
+            for photoData in windowData.photos {
+                try await importPhoto(from: directory, photoData: photoData, for: window)
+            }
+            context.refresh(window, mergeChanges: true)
+            let progress = 0.5 + (Double(index + 1) / Double(package.specimens.count)) * 0.4
+            await MainActor.run { importProgress = progress }
+        }
+        
+        try context.save()
+        await MainActor.run { importProgress = 1.0 }
+    }
+    
     func resolveDuplicate(choice: DuplicateResolution) async {
         guard let pending = pendingDuplicateResolution else { return }
         
@@ -763,6 +1154,7 @@ class JobImportService: ObservableObject {
             let job = pending.existingJob
             let p = pending.package.job
             if let v = p.clientName { job.clientName = v }
+            if let v = p.tenantName { job.tenantName = v }
             if let v = p.addressLine1 { job.addressLine1 = v }
             if let v = p.cleanedAddressLine1 { job.cleanedAddressLine1 = v }
             if let v = p.city { job.city = v }
@@ -791,6 +1183,16 @@ class JobImportService: ObservableObject {
             if let v = p.includeEngineeringLetter { job.includeEngineeringLetter = v }
             if let v = p.includeWeatherInReport { job.includeWeatherInReport = v }
             if let v = p.customWeatherText { job.customWeatherText = v }
+            if let v = p.namedStormWeatherSource { job.namedStormWeatherSource = v }
+            if let v = p.customPurposeText { job.customPurposeText = v }
+            if let v = p.customObservationsText { job.customObservationsText = v }
+            if let v = p.customTestPerformedText { job.customTestPerformedText = v }
+            if let v = p.customBackgroundInformationText { job.customBackgroundInformationText = v }
+            if let v = p.customRecommendationsText { job.customRecommendationsText = v }
+            if let v = p.customEngineeringLetterParagraph2 { job.customEngineeringLetterParagraph2 = v }
+            if let v = p.includePageNumbersInReport { job.includePageNumbersInReport = v }
+            if let v = p.includeAddressInReport { job.includeAddressInReport = v }
+            if let v = p.reportStartingPageNumber { job.reportStartingPageNumber = Int32(max(1, v)) }
             job.updatedAt = Date()
             
             let didStartAccess = !pending.isTempDirectory && pending.directory.startAccessingSecurityScopedResource()
@@ -823,6 +1225,7 @@ class JobImportService: ObservableObject {
             let p = pending.package.job
             newJob.jobId = newJobId
             newJob.clientName = p.clientName
+            newJob.tenantName = p.tenantName
             newJob.addressLine1 = p.addressLine1
             newJob.cleanedAddressLine1 = p.cleanedAddressLine1 ?? AddressCleaningUtility.cleanAddress(p.addressLine1 ?? "")
             newJob.city = p.city
@@ -853,6 +1256,16 @@ class JobImportService: ObservableObject {
             newJob.includeEngineeringLetter = p.includeEngineeringLetter ?? false
             newJob.includeWeatherInReport = p.includeWeatherInReport ?? true
             newJob.customWeatherText = p.customWeatherText
+            newJob.namedStormWeatherSource = p.namedStormWeatherSource
+            newJob.customPurposeText = p.customPurposeText
+            newJob.customObservationsText = p.customObservationsText
+            newJob.customTestPerformedText = p.customTestPerformedText
+            newJob.customBackgroundInformationText = p.customBackgroundInformationText
+            newJob.customRecommendationsText = p.customRecommendationsText
+            newJob.customEngineeringLetterParagraph2 = p.customEngineeringLetterParagraph2
+            newJob.includePageNumbersInReport = p.includePageNumbersInReport ?? true
+            newJob.includeAddressInReport = p.includeAddressInReport ?? true
+            newJob.reportStartingPageNumber = Int32(max(1, p.reportStartingPageNumber ?? 1))
             
             let didStartAccess = !pending.isTempDirectory && pending.directory.startAccessingSecurityScopedResource()
             defer { if didStartAccess { pending.directory.stopAccessingSecurityScopedResource() } }
@@ -1474,6 +1887,58 @@ class JobImportService: ObservableObject {
         
         print("✅ Successfully imported photo: \(photo.photoId ?? "unknown")")
     }
+    
+    private func findFileInDirectory(_ directory: URL, filePath: String) -> URL? {
+        var path = filePath
+        if path.hasPrefix("/") { path = String(path.dropFirst()) }
+        let direct = directory.appendingPathComponent(path)
+        if FileManager.default.fileExists(atPath: direct.path) { return direct }
+        if path.contains("photos/") {
+            let privatePath = path.replacingOccurrences(of: "photos/", with: "privatephotos/")
+            let privateURL = directory.appendingPathComponent(privatePath)
+            if FileManager.default.fileExists(atPath: privateURL.path) { return privateURL }
+        }
+        let filename = (path as NSString).lastPathComponent
+        let inPhotos = directory.appendingPathComponent("photos").appendingPathComponent(filename)
+        if FileManager.default.fileExists(atPath: inPhotos.path) { return inPhotos }
+        let inPrivate = directory.appendingPathComponent("privatephotos").appendingPathComponent(filename)
+        if FileManager.default.fileExists(atPath: inPrivate.path) { return inPrivate }
+        return nil
+    }
+    
+    private func importSectionPhoto(from directory: URL, photoData: FullJobPackage.FullSectionPhotoData, for section: SpecimenSection) async throws {
+        guard let sourceURL = findFileInDirectory(directory, filePath: photoData.imageFile) else {
+            print("MYDEBUG → Section photo not found at \(photoData.imageFile)")
+            return
+        }
+        let jobId = section.job?.jobId ?? "unknown"
+        let sectionId = section.sectionId ?? "unknown"
+        let sectionPhotosDir = documentsDirectory
+            .appendingPathComponent("photos")
+            .appendingPathComponent(jobId)
+            .appendingPathComponent("section")
+            .appendingPathComponent(sectionId)
+        try FileManager.default.createDirectory(at: sectionPhotosDir, withIntermediateDirectories: true)
+        let ext = sourceURL.pathExtension.isEmpty ? "jpg" : sourceURL.pathExtension
+        let fileName = "\(UUID().uuidString).\(ext)"
+        let destURL = sectionPhotosDir.appendingPathComponent(fileName)
+        try FileManager.default.copyItem(at: sourceURL, to: destURL)
+        let relativePath = "photos/\(jobId)/section/\(sectionId)/\(fileName)"
+        let sectionPhoto = SectionPhoto(context: context)
+        sectionPhoto.photoId = photoData.photoId
+        sectionPhoto.photoType = photoData.photoType
+        sectionPhoto.filePath = relativePath
+        sectionPhoto.photoSource = "FileSystem"
+        sectionPhoto.notes = photoData.notes
+        sectionPhoto.arrowXPosition = photoData.arrowXPosition ?? 0
+        sectionPhoto.arrowYPosition = photoData.arrowYPosition ?? 0
+        sectionPhoto.arrowDirection = photoData.arrowDirection
+        sectionPhoto.rotationDegrees = photoData.rotationDegrees ?? 0
+        sectionPhoto.includeInReport = photoData.includeInReport
+        sectionPhoto.createdAt = photoData.createdAt.map { Date(timeIntervalSince1970: $0) } ?? Date()
+        sectionPhoto.specimenSection = section
+        print("MYDEBUG → Imported section photo: \(relativePath)")
+    }
 }
 
 enum ImportError: LocalizedError {
@@ -1484,7 +1949,12 @@ enum ImportError: LocalizedError {
     case photoImportFailed
     case missingFullJobPackage
     case invalidFullJobPackageFormat
-    
+    case unknownPackageType
+    case missingSpecimenPackage
+    case invalidSpecimenPackageFormat
+    case missingPhotoNoteCategoriesPackage
+    case invalidPhotoNoteCategoriesPackageFormat
+
     var errorDescription: String? {
         switch self {
         case .unableToAccessFile:
@@ -1501,7 +1971,16 @@ enum ImportError: LocalizedError {
             return "The package doesn't contain a full-job-package.json file"
         case .invalidFullJobPackageFormat:
             return "The data file has an invalid format"
+        case .unknownPackageType:
+            return "The package doesn't contain a recognized job, specimen, or photo note categories package"
+        case .missingSpecimenPackage:
+            return "The package doesn't contain a specimen-package.json file"
+        case .invalidSpecimenPackageFormat:
+            return "The specimen package has an invalid format"
+        case .missingPhotoNoteCategoriesPackage:
+            return "The package doesn't contain a photo-note-categories-package.json file"
+        case .invalidPhotoNoteCategoriesPackageFormat:
+            return "The photo note categories package has an invalid format"
         }
     }
 }
-

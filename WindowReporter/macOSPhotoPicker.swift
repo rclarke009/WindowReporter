@@ -157,8 +157,23 @@ struct macOSPhotoPicker: View {
         switch result {
         case .success(let urls):
             guard let url = urls.first else { return }
-            Task {
-                await importFromFile(url: url)
+            // Use security-scoped URL only inside this handler; copy to temp then import async.
+            guard url.startAccessingSecurityScopedResource() else {
+                importError = "Unable to access selected file"
+                return
+            }
+            defer { url.stopAccessingSecurityScopedResource() }
+            let ext = url.pathExtension.isEmpty ? "jpg" : url.pathExtension
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension(ext)
+            do {
+                try FileManager.default.copyItem(at: url, to: tempURL)
+                Task {
+                    await importFromFile(url: tempURL)
+                }
+            } catch {
+                importError = error.localizedDescription
             }
         case .failure(let error):
             importError = error.localizedDescription
@@ -177,13 +192,13 @@ struct macOSPhotoPicker: View {
         importSuccess = false
         
         do {
-            // Start accessing security-scoped resource
-            guard url.startAccessingSecurityScopedResource() else {
-                throw NSError(domain: "PhotoImport", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unable to access file"])
-            }
-            defer { url.stopAccessingSecurityScopedResource() }
-            
+            // url is either a temp copy (from file picker) or temp from Photos; no security-scoped access needed here.
             let photo = try await photoImportService.importFromFile(url: url, window: window, photoType: photoType)
+            
+            // Clean up temp file if we created one (file picker path copies to temp in handleFileImport).
+            if url.path.hasPrefix(FileManager.default.temporaryDirectory.path) {
+                try? FileManager.default.removeItem(at: url)
+            }
             
             await MainActor.run {
                 isImporting = false

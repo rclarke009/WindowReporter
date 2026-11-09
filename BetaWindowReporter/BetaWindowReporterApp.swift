@@ -17,5 +17,9 @@ struct BetaWindowReporterApp: App {
             ContentView()
                 .environment(\.managedObjectContext, persistenceController.container.viewContext)
         }
+
+        SwiftUI.Window("Settings", id: "settings") {
+            SettingsView()
+        }
     }
 }

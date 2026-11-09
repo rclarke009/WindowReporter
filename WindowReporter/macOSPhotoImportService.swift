@@ -80,7 +80,6 @@ class macOSPhotoImportService {
         
         // Create new photo entity
         let photo = Photo(context: context)
-        let photoIdBefore = photo.photoId
         photo.photoId = UUID().uuidString
         photo.photoType = photoType.rawValue
         photo.filePath = relativePath

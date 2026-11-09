@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		A978FE1A2F5141120050C6E1 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = A97DF7A12ECD42E4009A20DD /* ZIPFoundation */; };
 		A97DF79F2ECD42E4009A20DD /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = A97DF7A12ECD42E4009A20DD /* ZIPFoundation */; };
+		A9B2C0012F90000100E4A86C /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = A9B2C0122F90000100E4A86C /* Supabase */; };
+		A9B2C0032F90000100E4A86C /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = A9B2C0122F90000100E4A86C /* Supabase */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -58,9 +60,15 @@
 				AddressCleaningUtility.swift,
 				AppNotifications.swift,
 				Assets.xcassets,
+				AuthGateView.swift,
 				BaseTemplateWithImage.docx,
+				BuiltInTestingProcedureDefaults.swift,
+				Config.plist,
+				ConfigManager.swift,
 				ContentView.swift,
 				CreateJobView.swift,
+				CustomizationsHubView.swift,
+				CustomizationSyncService.swift,
 				EditJobView.swift,
 				ExportService.swift,
 				images/EngineerStamp.png,
@@ -78,10 +86,29 @@
 				macOSPhotoImportService.swift,
 				macOSPhotoPicker.swift,
 				Persistence.swift,
+				PhotoCategoriesEditorView.swift,
 				PhotoGalleryView.swift,
 				PhotoLargeGalleryView.swift,
 				PhotoNoteCategories.swift,
+				PhotoNoteCategoriesEditorView.swift,
+				PhotoNoteCategoriesStore.swift,
+				PhotoNoteCategoriesTransferService.swift,
+				ProcedureStepsEditorView.swift,
+				ReportBoilerplateDefaults.swift,
+				ReportBoilerplateEditorView.swift,
+				ReporterSectionEditorView.swift,
+				ReporterSectionLocationMarkerView.swift,
+				ReporterSectionPhotoGalleryView.swift,
+				ReporterTypeSectionsListView.swift,
 				SettingsView.swift,
+				"SpecimenEnvironmental+Effective.swift",
+				SupabaseManager.swift,
+				TeamCustomizationCache.swift,
+				TeamCustomizationTestingTypeId.swift,
+				TeamTestingTypesOrdering.swift,
+				TestingHubView.swift,
+				TestingTypesAndProceduresView.swift,
+				TestingTypesHelper.swift,
 				UntestedReasonSelectionView.swift,
 				"window-types/window-awning.png",
 				"window-types/window-casement.png",
@@ -94,7 +121,9 @@
 				"window-types/window-sliding.png",
 				WindowEditorView.swift,
 				WindowReporter.xcdatamodeld,
+				WindowTypeBuiltInList.swift,
 				WindowTypePicker.swift,
+				WindowTypesEditorView.swift,
 			);
 			target = A978FDED2F5141110050C6E1 /* BetaWindowReporter */;
 		};
@@ -142,6 +171,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A978FE1A2F5141120050C6E1 /* ZIPFoundation in Frameworks */,
+				A9B2C0012F90000100E4A86C /* Supabase in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -164,6 +194,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A97DF79F2ECD42E4009A20DD /* ZIPFoundation in Frameworks */,
+				A9B2C0032F90000100E4A86C /* Supabase in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -232,6 +263,7 @@
 			name = BetaWindowReporter;
 			packageProductDependencies = (
 				A97DF7A12ECD42E4009A20DD /* ZIPFoundation */,
+				A9B2C0122F90000100E4A86C /* Supabase */,
 			);
 			productName = BetaWindowReporter;
 			productReference = A978FDEE2F5141110050C6E1 /* BetaWindowReporter.app */;
@@ -302,6 +334,7 @@
 			name = WindowReporter;
 			packageProductDependencies = (
 				A97DF7A12ECD42E4009A20DD /* ZIPFoundation */,
+				A9B2C0122F90000100E4A86C /* Supabase */,
 			);
 			productName = WindowReporter;
 			productReference = A97DF7672ECD42E3009A20DD /* WindowReporter.app */;
@@ -398,6 +431,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A97DF7A02ECD42E4009A20DD /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+				A9B2C0102F90000100E4A86C /* XCRemoteSwiftPackageReference "supabase-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A97DF7682ECD42E3009A20DD /* Products */;
@@ -572,6 +606,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = BetaWindowReporter/BetaWindowReporter.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 9;
@@ -607,6 +642,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = BetaWindowReporter/BetaWindowReporter.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 9;
@@ -722,6 +758,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = WindowReporter/WindowReporter.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 5;
@@ -757,6 +794,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = WindowReporter/WindowReporter.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 5;
@@ -1064,6 +1102,14 @@
 				minimumVersion = 0.9.19;
 			};
 		};
+		A9B2C0102F90000100E4A86C /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/supabase/supabase-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1071,6 +1117,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A97DF7A02ECD42E4009A20DD /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
 			productName = ZIPFoundation;
+		};
+		A9B2C0122F90000100E4A86C /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A9B2C0102F90000100E4A86C /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

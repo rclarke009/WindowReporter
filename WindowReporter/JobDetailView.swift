@@ -317,9 +317,12 @@ private final class _ScrollbarConfigView: NSView {
 
 struct JobDetailView: View {
     let job: Job
+    @Binding var showingSettings: Bool
     @Environment(\.managedObjectContext) private var viewContext
     @State private var selectedTab = 0
     @State private var showingEditJob = false
+    @StateObject private var dropImportService = JobImportService(context: PersistenceController.shared.container.viewContext)
+    @State private var isDropTargeted = false
     
     var body: some View {
         VStack(spacing: 0) {
@@ -339,6 +342,11 @@ struct JobDetailView: View {
                         Text(job.clientName ?? "Unknown Client")
                             .font(.title2)
                             .foregroundColor(.secondary)
+                        if let tenant = blankToNil(job.tenantName) {
+                            Text("Tenant: \(tenant)")
+                                .font(.headline)
+                                .foregroundColor(.secondary)
+                        }
                     }
                     Spacer()
                     StatusBadge(status: job.status ?? "Unknown")
@@ -377,25 +385,28 @@ struct JobDetailView: View {
             // Tab Selection
             Picker("View", selection: $selectedTab) {
                 Text("Overview").tag(0)
-                Text("Windows").tag(1)
-                Text("Locations").tag(2)
-                Text("Report").tag(3)
+                Text("Testing").tag(1)
+                Text("Windows").tag(2)
+                Text("Locations").tag(3)
+                Text("Report").tag(4)
             }
             .pickerStyle(SegmentedPickerStyle())
             .padding()
             
             Divider()
             
-            // Content
+            // Content (with drop target for package ZIPs)
             Group {
                 switch selectedTab {
                 case 0:
                     JobOverviewView(job: job)
                 case 1:
-                    WindowsListView(job: job)
+                    TestingHubView(job: job)
                 case 2:
-                    OverheadCanvasView(job: job)
+                    WindowsListView(job: job)
                 case 3:
+                    OverheadCanvasView(job: job)
+                case 4:
                     ExportView(job: job)
                 default:
                     EmptyView()
@@ -404,10 +415,76 @@ struct JobDetailView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(12)
             .background(Color(NSColor.controlBackgroundColor))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.35), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(isDropTargeted ? Color.accentColor : Color.secondary.opacity(0.35), lineWidth: isDropTargeted ? 2 : 1))
             .clipped()
+            .onDrop(of: [.zip, .fileURL], isTargeted: $isDropTargeted) { providers in
+                guard let provider = providers.first else { return false }
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let fileURL = url, fileURL.pathExtension.lowercased() == "zip" else { return }
+                    Task { @MainActor in
+                        await dropImportService.importJobPackage(from: fileURL)
+                    }
+                }
+                return true
+            }
         }
         .navigationTitle("Job Details")
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button("Edit Job") {
+                    showingEditJob = true
+                }
+                Button {
+                    showingSettings = true
+                } label: {
+                    Label("Settings", systemImage: "gear")
+                }
+            }
+        }
+        .sheet(item: Binding<DuplicateResolutionSheetItem?>(
+            get: {
+                guard let pending = dropImportService.pendingDuplicateResolution else { return nil }
+                let j = pending.package.job
+                let parts = [j.addressLine1, j.city, j.state, j.zip].compactMap { $0 }
+                let summary = parts.isEmpty ? "Same job (by ID)" : parts.joined(separator: ", ")
+                return DuplicateResolutionSheetItem(addressSummary: summary)
+            },
+            set: { _, _ in }
+        )) { (item: DuplicateResolutionSheetItem) in
+            DuplicateResolutionSheet(
+                addressSummary: item.addressSummary,
+                onReplace: {
+                    Task {
+                        await dropImportService.resolveDuplicate(choice: .replace)
+                    }
+                },
+                onSkip: {
+                    Task {
+                        await dropImportService.resolveDuplicate(choice: .skip)
+                    }
+                },
+                onImportAsNew: {
+                    Task {
+                        await dropImportService.resolveDuplicate(choice: .importAsNew)
+                    }
+                }
+            )
+        }
+        .sheet(isPresented: Binding(
+            get: { dropImportService.pendingSpecimenResolution != nil },
+            set: { if !$0 { dropImportService.cancelSpecimenResolution() } }
+        )) {
+            if let pending = dropImportService.pendingSpecimenResolution {
+                SpecimenImportTargetSheet(
+                    jobId: pending.package.jobId,
+                    specimenCount: pending.package.specimens.count,
+                    importService: dropImportService,
+                    pending: pending
+                )
+            } else {
+                EmptyView()
+            }
+        }
         .sheet(isPresented: $showingEditJob) {
             EditJobView(job: job)
                 .frame(width: (NSScreen.main?.visibleFrame.width ?? 1440) * 0.75, height: 720)
@@ -429,11 +506,19 @@ struct JobOverviewView: View {
     let job: Job
     @Environment(\.managedObjectContext) private var viewContext
     @State private var replaceOptionsImageType: JobImageType?
+    @State private var pendingPhotosReplacementImageType: JobImageType?
     @State private var showingFilePickerForOverhead = false
     @State private var showingFilePickerForFrontOfHome = false
     @State private var showingFilePickerForGauge = false
+    @State private var showingPhotosLibraryForReplacement = false
     @State private var selectedPhotosItem: PhotosPickerItem?
     @State private var refreshTrigger = UUID()
+
+    private func presentReplaceOptions(for imageType: JobImageType) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+            replaceOptionsImageType = imageType
+        }
+    }
     
     var body: some View {
         ScrollView {
@@ -442,6 +527,9 @@ struct JobOverviewView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         InfoRow(label: "Job ID", value: job.jobId ?? "N/A")
                         InfoRow(label: "Client", value: job.clientName ?? "N/A")
+                        if let tenant = blankToNil(job.tenantName) {
+                            InfoRow(label: "Tenant", value: tenant)
+                        }
                         InfoRow(label: "Address", value: formatAddress(job: job))
                         InfoRow(label: "Status", value: job.status ?? "N/A")
                     }
@@ -568,7 +656,7 @@ struct JobOverviewView: View {
                                     Color.clear
                                         .contentShape(Rectangle())
                                         .onTapGesture(count: 2) {
-                                            replaceOptionsImageType = .overhead
+                                            presentReplaceOptions(for: .overhead)
                                         }
                                 )
                                 .cornerRadius(8)
@@ -597,7 +685,7 @@ struct JobOverviewView: View {
                                     Color.clear
                                         .contentShape(Rectangle())
                                         .onTapGesture(count: 2) {
-                                            replaceOptionsImageType = .frontOfHome
+                                            presentReplaceOptions(for: .frontOfHome)
                                         }
                                 )
                         } else {
@@ -612,7 +700,7 @@ struct JobOverviewView: View {
                     }
                 }
                 
-                // Calibration Equipment Photo
+                // Gauge / pressure verification photo
                 if let imagePath = job.gaugeImagePath {
                     GroupBox("Calibration Equipment Photo") {
                         if let image = loadGaugeImage(from: imagePath) {
@@ -625,7 +713,7 @@ struct JobOverviewView: View {
                                     Color.clear
                                         .contentShape(Rectangle())
                                         .onTapGesture(count: 2) {
-                                            replaceOptionsImageType = .gauge
+                                            presentReplaceOptions(for: .gauge)
                                         }
                                 )
                         } else {
@@ -637,6 +725,39 @@ struct JobOverviewView: View {
                             }
                             .frame(maxWidth: .infinity, maxHeight: 100)
                         }
+                    }
+                }
+                
+                // Calibration certificate (imported or saved per job)
+                if job.equipmentCalibrationImage1Path != nil || job.equipmentCalibrationImage2Path != nil {
+                    GroupBox("Calibration Certificate") {
+                        HStack(alignment: .top, spacing: 16) {
+                            if let path = job.equipmentCalibrationImage1Path, let image = loadEquipmentCalibrationImage(from: path) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Image(nsImage: image)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fit)
+                                        .frame(maxHeight: 220)
+                                        .cornerRadius(8)
+                                    Text("Certificate / Rain Maker")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            if let path = job.equipmentCalibrationImage2Path, let image = loadEquipmentCalibrationImage(from: path) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Image(nsImage: image)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fit)
+                                        .frame(maxHeight: 220)
+                                        .cornerRadius(8)
+                                    Text("Calibration Photo")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
                 
@@ -655,19 +776,36 @@ struct JobOverviewView: View {
         .modifier(LegacyScrollbarsModifier())
         .sheet(item: $replaceOptionsImageType) { imageType in
             ReplaceImageOptionsSheet(
-                selectedPhotosItem: $selectedPhotosItem,
+                onPhotosSelected: {
+                    replaceOptionsImageType = nil
+                    pendingPhotosReplacementImageType = imageType
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        showingPhotosLibraryForReplacement = true
+                    }
+                },
                 onFileSelected: {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    replaceOptionsImageType = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                         switch imageType {
-                        case .overhead: showingFilePickerForOverhead = true
-                        case .frontOfHome: showingFilePickerForFrontOfHome = true
-                        case .gauge: showingFilePickerForGauge = true
+                        case .overhead:
+                            showingFilePickerForOverhead = true
+                        case .frontOfHome:
+                            showingFilePickerForFrontOfHome = true
+                        case .gauge:
+                            showingFilePickerForGauge = true
                         }
                     }
                 },
-                onCancel: { }
+                onCancel: {
+                    replaceOptionsImageType = nil
+                }
             )
         }
+        .photosPicker(
+            isPresented: $showingPhotosLibraryForReplacement,
+            selection: $selectedPhotosItem,
+            matching: .images
+        )
         .fileImporter(
             isPresented: $showingFilePickerForOverhead,
             allowedContentTypes: [.jpeg, .png, .heic, .tiff, .bmp, .gif],
@@ -695,10 +833,10 @@ struct JobOverviewView: View {
                 if let data = try? await item.loadTransferable(type: Data.self),
                    let nsImage = NSImage(data: data) {
                     await MainActor.run {
-                        if let imageType = replaceOptionsImageType {
+                        if let imageType = pendingPhotosReplacementImageType {
                             saveImage(nsImage, for: imageType)
-                            replaceOptionsImageType = nil
                         }
+                        pendingPhotosReplacementImageType = nil
                         selectedPhotosItem = nil
                     }
                 }
@@ -836,6 +974,13 @@ struct JobOverviewView: View {
             return nil
         }
         
+        return NSImage(contentsOf: imageURL)
+    }
+    
+    private func loadEquipmentCalibrationImage(from imagePath: String) -> NSImage? {
+        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let imageURL = documentsDirectory.appendingPathComponent("equipment_calibration").appendingPathComponent(imagePath)
+        guard FileManager.default.fileExists(atPath: imageURL.path) else { return nil }
         return NSImage(contentsOf: imageURL)
     }
     
@@ -1067,6 +1212,205 @@ struct WindowRowView: View {
         .sheet(isPresented: $showingWindowEditor) {
             WindowEditorView(window: window)
                 .frame(width: 1000, height: 800)
+        }
+    }
+}
+
+// MARK: - Specimen Import Target (when no job matches jobId)
+
+struct SpecimenImportTargetSheet: View {
+    let jobId: String
+    let specimenCount: Int
+    @ObservedObject var importService: JobImportService
+    let pending: JobImportService.PendingSpecimenResolution
+    @Environment(\.managedObjectContext) private var viewContext
+    @Environment(\.dismiss) private var dismiss
+    
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \Job.createdAt, ascending: false)],
+        animation: .default
+    ) private var jobs: FetchedResults<Job>
+    
+    @State private var selectedJob: Job?
+    @State private var isImporting = false
+    @State private var importError: String?
+    
+    private var targetJobs: [Job] {
+        jobs.filter { $0.jobId != jobId }
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Add Specimens to Job")
+                .font(.headline)
+                .padding()
+            Text("This package contains \(specimenCount) specimen(s) for job ID \"\(jobId)\". No matching job found. Choose where to add them.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+            Divider()
+            List {
+                ForEach(targetJobs, id: \.objectID) { j in
+                    Button(action: { selectedJob = j }) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(j.jobId ?? "?")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                Text(j.clientName ?? "")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            if selectedJob?.objectID == j.objectID {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.accentColor)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .listStyle(.inset)
+            if let err = importError {
+                Text(err)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .padding(.horizontal)
+            }
+            Divider()
+            HStack {
+                Button("Cancel") {
+                    importService.cancelSpecimenResolution()
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Create new job and add specimens") {
+                    addToNewJob()
+                }
+                .disabled(isImporting)
+                Button("Add to selected job") {
+                    addToSelectedJob()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(isImporting || selectedJob == nil)
+            }
+            .padding()
+        }
+        .frame(width: 440, height: 380)
+    }
+    
+    private func addToSelectedJob() {
+        guard let target = selectedJob else { return }
+        importError = nil
+        isImporting = true
+        Task {
+            do {
+                _ = try await importService.importSpecimenPackageInto(target, from: pending)
+                await MainActor.run {
+                    isImporting = false
+                    NotificationCenter.default.post(name: .jobDataUpdated, object: target)
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    importError = error.localizedDescription
+                    isImporting = false
+                }
+            }
+        }
+    }
+    
+    private func addToNewJob() {
+        importError = nil
+        isImporting = true
+        let newJob = Job(context: viewContext)
+        newJob.jobId = jobId
+        newJob.status = "Ready"
+        newJob.createdAt = Date()
+        newJob.updatedAt = Date()
+        do {
+            try viewContext.save()
+        } catch {
+            importError = error.localizedDescription
+            isImporting = false
+            return
+        }
+        Task {
+            do {
+                _ = try await importService.importSpecimenPackageInto(newJob, from: pending)
+                await MainActor.run {
+                    isImporting = false
+                    NotificationCenter.default.post(name: .newJobCreated, object: newJob)
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    importError = error.localizedDescription
+                    isImporting = false
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Specimen Export Selection
+
+struct SpecimenExportSelectionSheet: View {
+    let job: Job
+    @Binding var selectedWindowIds: Set<String>
+    let onExport: () -> Void
+    let onCancel: () -> Void
+    
+    private var orderedWindows: [Window] {
+        let windows = (job.windows?.allObjects as? [Window]) ?? []
+        return windows.sorted { $0.displayOrder < $1.displayOrder }
+    }
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Export Specimens")
+                .font(.headline)
+                .padding()
+            Text("Select specimens to include in the package for the main user.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .padding(.horizontal)
+            Divider()
+            List {
+                ForEach(orderedWindows, id: \.windowId) { window in
+                    Toggle(isOn: Binding(
+                        get: { window.windowId.map { selectedWindowIds.contains($0) } ?? false },
+                        set: { on in
+                            guard let id = window.windowId else { return }
+                            if on { selectedWindowIds.insert(id) } else { selectedWindowIds.remove(id) }
+                        }
+                    )) {
+                        Text(window.windowNumber ?? "?")
+                    }
+                }
+            }
+            .listStyle(.inset)
+            Divider()
+            HStack {
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Export") {
+                    onExport()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(selectedWindowIds.isEmpty)
+            }
+            .padding()
+        }
+        .frame(width: 360, height: 400)
+        .onAppear {
+            if selectedWindowIds.isEmpty {
+                selectedWindowIds = Set(orderedWindows.compactMap { $0.windowId })
+            }
         }
     }
 }
@@ -1352,6 +1696,9 @@ private struct OverheadImageContentView: View {
         .scaleEffect(scaleToFill)
         .frame(width: effectiveMinSize.width, height: effectiveMinSize.height)
         .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            showingReplaceOptions = true
+        }
         .clipped()
         .overlay {
             dotsOverlay(
@@ -1359,6 +1706,7 @@ private struct OverheadImageContentView: View {
                 scaleToFill: scaleToFill,
                 fitScale: fitScale
             )
+            .allowsHitTesting(false)
         }
         .overlay(alignment: .topTrailing) {
             Button(action: { showingReplaceOptions = true }) {
@@ -1450,6 +1798,7 @@ struct OverheadCanvasView: View {
     @State private var image: NSImage?
     @State private var showingReplaceOptions = false
     @State private var showingFilePicker = false
+    @State private var showingPhotosLibrary = false
     @State private var selectedPhotosItem: PhotosPickerItem?
     @State private var locationsRefreshID = UUID()
     
@@ -1519,15 +1868,28 @@ struct OverheadCanvasView: View {
         }
         .sheet(isPresented: $showingReplaceOptions) {
             ReplaceImageOptionsSheet(
-                selectedPhotosItem: $selectedPhotosItem,
+                onPhotosSelected: {
+                    showingReplaceOptions = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        showingPhotosLibrary = true
+                    }
+                },
                 onFileSelected: {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    showingReplaceOptions = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                         showingFilePicker = true
                     }
                 },
-                onCancel: { }
+                onCancel: {
+                    showingReplaceOptions = false
+                }
             )
         }
+        .photosPicker(
+            isPresented: $showingPhotosLibrary,
+            selection: $selectedPhotosItem,
+            matching: .images
+        )
         .fileImporter(
             isPresented: $showingFilePicker,
             allowedContentTypes: [.jpeg, .png, .heic, .tiff, .bmp, .gif],
@@ -1755,6 +2117,36 @@ enum ReportSelectionMode: String, CaseIterable {
     case selectExisting = "Select Existing Report"
 }
 
+/// Presents system share sheet (AirDrop, Messages, etc.) for a file URL.
+private struct SharePickerView: NSViewRepresentable {
+    @Binding var isPresented: Bool
+    var items: [Any]
+    
+    func makeNSView(context: Context) -> NSView { NSView() }
+    
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if isPresented, !items.isEmpty {
+            let picker = NSSharingServicePicker(items: items)
+            picker.delegate = context.coordinator
+            DispatchQueue.main.async {
+                picker.show(relativeTo: .zero, of: nsView, preferredEdge: .minY)
+                context.coordinator.didPresent = true
+            }
+        }
+    }
+    
+    func makeCoordinator() -> Coordinator { Coordinator(isPresented: $isPresented) }
+    
+    class Coordinator: NSObject, NSSharingServicePickerDelegate {
+        @Binding var isPresented: Bool
+        var didPresent = false
+        init(isPresented: Binding<Bool>) { _isPresented = isPresented }
+        func sharingServicePicker(_ picker: NSSharingServicePicker, didChoose service: NSSharingService?) {
+            isPresented = false
+        }
+    }
+}
+
 struct ExportView: View {
     let job: Job
     @State private var isExportingDocx = false
@@ -1766,6 +2158,13 @@ struct ExportView: View {
     @State private var isExportingFullPackage = false
     @State private var fullPackageFileURL: URL?
     @State private var fullPackageError: String?
+    @State private var showFullPackageShare = false
+    @State private var isExportingSpecimen = false
+    @State private var specimenPackageFileURL: URL?
+    @State private var specimenPackageError: String?
+    @State private var showSpecimenShare = false
+    @State private var showingSpecimenSelection = false
+    @State private var selectedWindowIdsForExport: Set<String> = []
     
     @State private var showingCustomizationSheet = false
     @State private var includeEngineeringLetter = false
@@ -1945,6 +2344,11 @@ struct ExportView: View {
                                     Text("Exported: \(fileURL.lastPathComponent)")
                                         .font(.caption)
                                         .foregroundColor(.secondary)
+                                    Button("Share…") {
+                                        showFullPackageShare = true
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .font(.caption)
                                     Button("Reveal in Finder") {
                                         NSWorkspace.shared.activateFileViewerSelecting([fileURL])
                                     }
@@ -1957,6 +2361,81 @@ struct ExportView: View {
                         .background(Color(.controlBackgroundColor))
                         .cornerRadius(8)
                         
+                        // Specimen package (send to main user)
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Image(systemName: "square.and.arrow.up")
+                                    .font(.title2)
+                                    .foregroundColor(.blue)
+                                Text("Specimen Package")
+                                    .font(.headline)
+                                Spacer()
+                            }
+                            Text("Export one or more specimens to send to the main user (e.g. via AirDrop or Messages)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            HStack(spacing: 12) {
+                                Button(action: {
+                                    showingSpecimenSelection = true
+                                }) {
+                                    Label("Export selected specimens", systemImage: "checklist")
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled((job.windows?.count ?? 0) == 0)
+                                Button(action: {
+                                    exportAllSpecimens()
+                                }) {
+                                    HStack {
+                                        if isExportingSpecimen {
+                                            ProgressView().scaleEffect(0.8)
+                                        } else {
+                                            Image(systemName: "square.and.arrow.down")
+                                        }
+                                        Text(isExportingSpecimen ? "Exporting…" : "Export all specimens")
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(isExportingSpecimen || (job.windows?.count ?? 0) == 0)
+                            }
+                            if let error = specimenPackageError {
+                                Text("Error: \(error)")
+                                    .font(.caption)
+                                    .foregroundColor(.red)
+                            }
+                            if let fileURL = specimenPackageFileURL {
+                                HStack {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                    Text("Exported: \(fileURL.lastPathComponent)")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Button("Share…") {
+                                        showSpecimenShare = true
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .font(.caption)
+                                    Button("Reveal in Finder") {
+                                        NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .font(.caption)
+                                }
+                            }
+                        }
+                        .padding()
+                        .background(Color(.controlBackgroundColor))
+                        .cornerRadius(8)
+                        .background(SharePickerView(isPresented: $showFullPackageShare, items: fullPackageFileURL.map { [$0] } ?? []))
+                        .background(SharePickerView(isPresented: $showSpecimenShare, items: specimenPackageFileURL.map { [$0] } ?? []))
+                        .sheet(isPresented: $showingSpecimenSelection) {
+                            SpecimenExportSelectionSheet(job: job, selectedWindowIds: $selectedWindowIdsForExport) {
+                                exportSelectedSpecimens()
+                                showingSpecimenSelection = false
+                            } onCancel: {
+                                showingSpecimenSelection = false
+                            }
+                        }
+                        
                         // Customize Report
                         Button(action: {
                             showingCustomizationSheet = true
@@ -1965,7 +2444,7 @@ struct ExportView: View {
                                 Image(systemName: "slider.horizontal.3")
                                 Text("Customize Report")
                                 Spacer()
-                                if hasCustomHurricaneImage() || hasCustomWeatherText() || hasConclusionComment() || includeEngineeringLetter || !(job.includeWeatherInReport ?? true) {
+                                if hasCustomHurricaneImage() || hasCustomWeatherText() || hasConclusionComment() || includeEngineeringLetter || hasCustomEngineeringLetterParagraph2() || !(job.includeWeatherInReport ?? true) || !(job.includePageNumbersInReport ?? true) || !(job.includeAddressInReport ?? true) || job.reportStartingPageNumber != 1 || hasCustomPurposeText() || hasCustomObservationsText() || hasCustomTestPerformedText() || hasCustomBackgroundInformationText() || hasCustomRecommendationsText() {
                                     Image(systemName: "checkmark.circle.fill")
                                         .foregroundColor(.green)
                                 }
@@ -2143,6 +2622,35 @@ struct ExportView: View {
         return !comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     
+    private func hasCustomPurposeText() -> Bool {
+        guard let text = job.customPurposeText else { return false }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    private func hasCustomObservationsText() -> Bool {
+        guard let text = job.customObservationsText else { return false }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    private func hasCustomTestPerformedText() -> Bool {
+        guard let text = job.customTestPerformedText else { return false }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    private func hasCustomBackgroundInformationText() -> Bool {
+        guard let text = job.customBackgroundInformationText else { return false }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    private func hasCustomRecommendationsText() -> Bool {
+        guard let text = job.customRecommendationsText else { return false }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func hasCustomEngineeringLetterParagraph2() -> Bool {
+        engineeringLetterParagraph2IsCustom(job.customEngineeringLetterParagraph2)
+    }
+    
     private func exportDocxReport() {
         guard !isExportingDocx else { return }
         isExportingDocx = true
@@ -2150,7 +2658,14 @@ struct ExportView: View {
         
         Task {
             do {
-                let package = FieldResultsPackage(job: job, exportDirectory: URL(fileURLWithPath: ""))
+                let cal1Path = job.equipmentCalibrationImage1Path
+                let cal2Path = job.equipmentCalibrationImage2Path
+                let package = FieldResultsPackage(
+                    job: job,
+                    exportDirectory: URL(fileURLWithPath: ""),
+                    equipmentCalibrationImage1Path: cal1Path,
+                    equipmentCalibrationImage2Path: cal2Path
+                )
                 let docURL = try await package.generateStandaloneDOCXReport()
                 await MainActor.run {
                     docxFileURL = docURL
@@ -2179,7 +2694,14 @@ struct ExportView: View {
 
         Task {
             do {
-                let package = FieldResultsPackage(job: job, exportDirectory: URL(fileURLWithPath: ""))
+                let cal1Path = job.equipmentCalibrationImage1Path
+                let cal2Path = job.equipmentCalibrationImage2Path
+                let package = FieldResultsPackage(
+                    job: job,
+                    exportDirectory: URL(fileURLWithPath: ""),
+                    equipmentCalibrationImage1Path: cal1Path,
+                    equipmentCalibrationImage2Path: cal2Path
+                )
                 let pdfURL = try await package.exportPDFReport(includeEngineeringLetter: includeEngLetter)
                 await MainActor.run {
                     pdfFileURL = pdfURL
@@ -2211,7 +2733,6 @@ struct ExportView: View {
                 await MainActor.run {
                     fullPackageFileURL = zipURL
                     isExportingFullPackage = false
-                    // Open the file location
                     NSWorkspace.shared.activateFileViewerSelecting([zipURL])
                 }
             } catch {
@@ -2219,6 +2740,50 @@ struct ExportView: View {
                 await MainActor.run {
                     fullPackageError = error.localizedDescription
                     isExportingFullPackage = false
+                }
+            }
+        }
+    }
+    
+    private func exportAllSpecimens() {
+        let windows = (job.windows?.allObjects as? [Window]) ?? []
+        let ordered = windows.sorted { $0.displayOrder < $1.displayOrder }
+        guard !ordered.isEmpty else { return }
+        exportSpecimens(ordered)
+    }
+    
+    private func exportSelectedSpecimens() {
+        let windows = (job.windows?.allObjects as? [Window]) ?? []
+        let ordered = windows.sorted { $0.displayOrder < $1.displayOrder }.filter { w in
+            guard let id = w.windowId else { return false }
+            return selectedWindowIdsForExport.contains(id)
+        }
+        guard !ordered.isEmpty else {
+            specimenPackageError = "Select at least one specimen"
+            return
+        }
+        exportSpecimens(ordered)
+    }
+    
+    private func exportSpecimens(_ windows: [Window]) {
+        guard !isExportingSpecimen else { return }
+        isExportingSpecimen = true
+        specimenPackageError = nil
+        specimenPackageFileURL = nil
+        Task {
+            do {
+                job.managedObjectContext?.refresh(job, mergeChanges: true)
+                let exporter = SpecimenPackageExporter(job: job, windows: windows)
+                let zipURL = try await exporter.export()
+                await MainActor.run {
+                    specimenPackageFileURL = zipURL
+                    isExportingSpecimen = false
+                }
+            } catch {
+                print("MYDEBUG → Specimen export failed: \(error.localizedDescription)")
+                await MainActor.run {
+                    specimenPackageError = error.localizedDescription
+                    isExportingSpecimen = false
                 }
             }
         }
@@ -2288,7 +2853,14 @@ struct ExportView: View {
                     print("MYDEBUG →", "Generating PDF report for email draft...")
                     job.managedObjectContext?.refresh(job, mergeChanges: true)
                     let includeEngLetter = job.includeEngineeringLetter ?? includeEngineeringLetter
-                    let package = FieldResultsPackage(job: job, exportDirectory: URL(fileURLWithPath: ""))
+                    let cal1Path = job.equipmentCalibrationImage1Path
+                    let cal2Path = job.equipmentCalibrationImage2Path
+                    let package = FieldResultsPackage(
+                        job: job,
+                        exportDirectory: URL(fileURLWithPath: ""),
+                        equipmentCalibrationImage1Path: cal1Path,
+                        equipmentCalibrationImage2Path: cal2Path
+                    )
                     pdfURL = try await package.exportPDFReport(includeEngineeringLetter: includeEngLetter)
                     print("MYDEBUG →", "PDF generated at: \(pdfURL.path)")
                 }
@@ -2681,9 +3253,19 @@ struct ReportCustomizationSheetView: View {
     @State private var editingCustomWeatherText: String = ""
     @State private var editingConclusionComment: String = ""
     @State private var editingIncludeEngineeringLetter: Bool = false
+    @State private var editingCustomPurposeText: String = ""
+    @State private var editingCustomObservationsText: String = ""
+    @State private var editingCustomTestPerformedText: String = ""
+    @State private var editingCustomBackgroundInformationText: String = ""
+    @State private var editingCustomRecommendationsText: String = ""
+    @State private var editingCustomEngineeringLetterParagraph2: String = ""
+    @State private var editingIncludePageNumbersInReport: Bool = true
+    @State private var editingIncludeAddressInReport: Bool = true
+    @State private var editingReportStartingPageNumber: Int = 1
     @State private var imageRefreshId = UUID()
     @State private var showingReplaceOptionsForCustomHurricane = false
     @State private var showingFilePickerForCustomHurricane = false
+    @State private var showingPhotosLibraryForCustomHurricane = false
     @State private var selectedPhotosItem: PhotosPickerItem?
     
     let onSave: () -> Void
@@ -2697,7 +3279,23 @@ struct ReportCustomizationSheetView: View {
                         Toggle("Include Weather in Report", isOn: $editingIncludeWeatherInReport)
                             .padding()
                     }
-                    
+
+                    GroupBox("Report Options") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle("Include Page Numbers in Report", isOn: $editingIncludePageNumbersInReport)
+                            if editingIncludePageNumbersInReport {
+                                Stepper(value: $editingReportStartingPageNumber, in: 1...9999) {
+                                    Text("Starting page number: \(editingReportStartingPageNumber)")
+                                }
+                                Text("Number of the first page of this report in the parent document.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Toggle("Include Address in Report", isOn: $editingIncludeAddressInReport)
+                        }
+                        .padding()
+                    }
+
                     if editingIncludeWeatherInReport {
                     GroupBox("Custom Weather Image") {
                         VStack(alignment: .leading, spacing: 12) {
@@ -2800,6 +3398,116 @@ struct ReportCustomizationSheetView: View {
                     }
                     }
                     
+                    GroupBox("Custom Purpose") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            if hasCustomPurposeText() {
+                                HStack { Spacer(); Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
+                            }
+                            TextEditor(text: $editingCustomPurposeText)
+                                .frame(minHeight: 120)
+                                .padding(8)
+                                .background(Color(.controlBackgroundColor))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(NSColor.separatorColor), lineWidth: 1))
+                            Text("Leave empty to use default text.").font(.caption).foregroundColor(.secondary)
+                            if hasCustomPurposeText() {
+                                Button(action: { editingCustomPurposeText = "" }) {
+                                    HStack { Image(systemName: "trash"); Text("Reset to Default") }
+                                }
+                                .buttonStyle(.borderedProminent).tint(.red)
+                            }
+                        }
+                        .padding()
+                    }
+                    
+                    GroupBox("Custom Observations") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            if hasCustomObservationsText() {
+                                HStack { Spacer(); Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
+                            }
+                            TextEditor(text: $editingCustomObservationsText)
+                                .frame(minHeight: 120)
+                                .padding(8)
+                                .background(Color(.controlBackgroundColor))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(NSColor.separatorColor), lineWidth: 1))
+                            Text("Leave empty to use default text.").font(.caption).foregroundColor(.secondary)
+                            if hasCustomObservationsText() {
+                                Button(action: { editingCustomObservationsText = "" }) {
+                                    HStack { Image(systemName: "trash"); Text("Reset to Default") }
+                                }
+                                .buttonStyle(.borderedProminent).tint(.red)
+                            }
+                        }
+                        .padding()
+                    }
+                    
+                    GroupBox("Tests Performed") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            if hasCustomTestPerformedText() {
+                                HStack { Spacer(); Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
+                            }
+                            TextEditor(text: $editingCustomTestPerformedText)
+                                .frame(minHeight: 120)
+                                .padding(8)
+                                .background(Color(.controlBackgroundColor))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(NSColor.separatorColor), lineWidth: 1))
+                            Text("Leave empty to use default text.").font(.caption).foregroundColor(.secondary)
+                            if hasCustomTestPerformedText() {
+                                Button(action: { editingCustomTestPerformedText = "" }) {
+                                    HStack { Image(systemName: "trash"); Text("Reset to Default") }
+                                }
+                                .buttonStyle(.borderedProminent).tint(.red)
+                            }
+                        }
+                        .padding()
+                    }
+                    
+                    GroupBox("Background Information") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            if hasCustomBackgroundInformationText() {
+                                HStack { Spacer(); Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
+                            }
+                            TextEditor(text: $editingCustomBackgroundInformationText)
+                                .frame(minHeight: 120)
+                                .padding(8)
+                                .background(Color(.controlBackgroundColor))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(NSColor.separatorColor), lineWidth: 1))
+                            Text("Leave empty to use default text.").font(.caption).foregroundColor(.secondary)
+                            if hasCustomBackgroundInformationText() {
+                                Button(action: { editingCustomBackgroundInformationText = "" }) {
+                                    HStack { Image(systemName: "trash"); Text("Reset to Default") }
+                                }
+                                .buttonStyle(.borderedProminent).tint(.red)
+                            }
+                        }
+                        .padding()
+                    }
+                    
+                    GroupBox("Custom Recommendations") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            if hasCustomRecommendationsText() {
+                                HStack { Spacer(); Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
+                            }
+                            TextEditor(text: $editingCustomRecommendationsText)
+                                .frame(minHeight: 120)
+                                .padding(8)
+                                .background(Color(.controlBackgroundColor))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(NSColor.separatorColor), lineWidth: 1))
+                            Text("Leave empty to use default text.").font(.caption).foregroundColor(.secondary)
+                            if hasCustomRecommendationsText() {
+                                Button(action: { editingCustomRecommendationsText = "" }) {
+                                    HStack { Image(systemName: "trash"); Text("Reset to Default") }
+                                }
+                                .buttonStyle(.borderedProminent).tint(.red)
+                            }
+                        }
+                        .padding()
+                    }
+                    
                     GroupBox("Conclusion Comment") {
                         VStack(alignment: .leading, spacing: 12) {
                             if hasConclusionComment() {
@@ -2844,8 +3552,32 @@ struct ReportCustomizationSheetView: View {
                     }
                     
                     GroupBox("Engineering Letter") {
-                        Toggle("Include Engineering Letter", isOn: $editingIncludeEngineeringLetter)
-                            .padding()
+                        VStack(alignment: .leading, spacing: 12) {
+                            Toggle("Include Engineering Letter", isOn: $editingIncludeEngineeringLetter)
+                            if hasCustomEngineeringLetterParagraph2() {
+                                HStack { Spacer(); Image(systemName: "checkmark.circle.fill").foregroundColor(.green) }
+                            }
+                            Text("Paragraph 2")
+                                .font(.subheadline)
+                                .fontWeight(.medium)
+                            TextEditor(text: $editingCustomEngineeringLetterParagraph2)
+                                .frame(minHeight: 120)
+                                .padding(8)
+                                .background(Color(.controlBackgroundColor))
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(NSColor.separatorColor), lineWidth: 1))
+                            Text("Second paragraph of the engineering letter. Edit it for this job, or reset to restore the default.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            if hasCustomEngineeringLetterParagraph2() {
+                                Button(action: { editingCustomEngineeringLetterParagraph2 = engineeringLetterParagraph2Default }) {
+                                    HStack { Image(systemName: "trash"); Text("Reset to Default") }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(.red)
+                            }
+                        }
+                        .padding()
                     }
                 }
                 .padding(.horizontal, 20)
@@ -2867,15 +3599,28 @@ struct ReportCustomizationSheetView: View {
         }
         .sheet(isPresented: $showingReplaceOptionsForCustomHurricane) {
             ReplaceImageOptionsSheet(
-                selectedPhotosItem: $selectedPhotosItem,
+                onPhotosSelected: {
+                    showingReplaceOptionsForCustomHurricane = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        showingPhotosLibraryForCustomHurricane = true
+                    }
+                },
                 onFileSelected: {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    showingReplaceOptionsForCustomHurricane = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                         showingFilePickerForCustomHurricane = true
                     }
                 },
-                onCancel: { }
+                onCancel: {
+                    showingReplaceOptionsForCustomHurricane = false
+                }
             )
         }
+        .photosPicker(
+            isPresented: $showingPhotosLibraryForCustomHurricane,
+            selection: $selectedPhotosItem,
+            matching: .images
+        )
         .fileImporter(
             isPresented: $showingFilePickerForCustomHurricane,
             allowedContentTypes: [.jpeg, .png, .heic, .tiff, .bmp, .gif],
@@ -2914,6 +3659,19 @@ struct ReportCustomizationSheetView: View {
         editingCustomWeatherText = job.customWeatherText ?? ""
         editingConclusionComment = job.conclusionComment ?? ""
         editingIncludeEngineeringLetter = job.includeEngineeringLetter ?? false
+        editingCustomPurposeText = job.customPurposeText ?? ""
+        editingCustomObservationsText = job.customObservationsText ?? ""
+        editingCustomTestPerformedText = job.customTestPerformedText ?? ""
+        editingCustomBackgroundInformationText = job.customBackgroundInformationText ?? ""
+        editingCustomRecommendationsText = job.customRecommendationsText ?? ""
+        if engineeringLetterParagraph2IsCustom(job.customEngineeringLetterParagraph2) {
+            editingCustomEngineeringLetterParagraph2 = job.customEngineeringLetterParagraph2 ?? engineeringLetterParagraph2Default
+        } else {
+            editingCustomEngineeringLetterParagraph2 = engineeringLetterParagraph2Default
+        }
+        editingIncludePageNumbersInReport = job.includePageNumbersInReport ?? true
+        editingIncludeAddressInReport = job.includeAddressInReport ?? true
+        editingReportStartingPageNumber = max(1, Int(job.reportStartingPageNumber))
     }
     
     private func hasCustomHurricaneImage() -> Bool {
@@ -2945,6 +3703,30 @@ struct ReportCustomizationSheetView: View {
     private func hasConclusionComment() -> Bool {
         guard let comment = job.conclusionComment else { return false }
         return !comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    private func hasCustomPurposeText() -> Bool {
+        return !editingCustomPurposeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    private func hasCustomObservationsText() -> Bool {
+        return !editingCustomObservationsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    private func hasCustomTestPerformedText() -> Bool {
+        return !editingCustomTestPerformedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    private func hasCustomBackgroundInformationText() -> Bool {
+        return !editingCustomBackgroundInformationText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    private func hasCustomRecommendationsText() -> Bool {
+        return !editingCustomRecommendationsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func hasCustomEngineeringLetterParagraph2() -> Bool {
+        engineeringLetterParagraph2IsCustom(editingCustomEngineeringLetterParagraph2)
     }
     
     private func removeCustomHurricaneImage() {
@@ -2980,8 +3762,27 @@ struct ReportCustomizationSheetView: View {
             job.conclusionComment = editingConclusionComment
         }
         
+        let purposeTrimmed = editingCustomPurposeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        job.customPurposeText = purposeTrimmed.isEmpty ? nil : editingCustomPurposeText
+        let observationsTrimmed = editingCustomObservationsText.trimmingCharacters(in: .whitespacesAndNewlines)
+        job.customObservationsText = observationsTrimmed.isEmpty ? nil : editingCustomObservationsText
+        let testPerformedTrimmed = editingCustomTestPerformedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        job.customTestPerformedText = testPerformedTrimmed.isEmpty ? nil : editingCustomTestPerformedText
+        let backgroundTrimmed = editingCustomBackgroundInformationText.trimmingCharacters(in: .whitespacesAndNewlines)
+        job.customBackgroundInformationText = backgroundTrimmed.isEmpty ? nil : editingCustomBackgroundInformationText
+        let recommendationsTrimmed = editingCustomRecommendationsText.trimmingCharacters(in: .whitespacesAndNewlines)
+        job.customRecommendationsText = recommendationsTrimmed.isEmpty ? nil : editingCustomRecommendationsText
+        if engineeringLetterParagraph2IsCustom(editingCustomEngineeringLetterParagraph2) {
+            job.customEngineeringLetterParagraph2 = editingCustomEngineeringLetterParagraph2
+        } else {
+            job.customEngineeringLetterParagraph2 = nil
+        }
+        
         job.includeEngineeringLetter = editingIncludeEngineeringLetter
         includeEngineeringLetter = editingIncludeEngineeringLetter
+        job.includePageNumbersInReport = editingIncludePageNumbersInReport
+        job.includeAddressInReport = editingIncludeAddressInReport
+        job.reportStartingPageNumber = Int32(max(1, editingReportStartingPageNumber))
         
         do {
             try viewContext.save()
@@ -3079,31 +3880,63 @@ struct JobStatusBadge: View {
 
 // MARK: - Replace Image Options Sheet (choose from Photos or File)
 private struct ReplaceImageOptionsSheet: View {
-    @Binding var selectedPhotosItem: PhotosPickerItem?
+    let onPhotosSelected: () -> Void
     let onFileSelected: () -> Void
     let onCancel: () -> Void
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 20) {
             Text("Replace Image")
-                .font(.headline)
-            PhotosPicker(selection: $selectedPhotosItem, matching: .images) {
-                Label("Choose from Photos", systemImage: "photo.on.rectangle.angled")
+                .font(.title2)
+                .fontWeight(.semibold)
+
+            Text("Choose a photo source")
+                .font(.body)
+                .foregroundColor(.secondary)
+
+            HStack(spacing: 16) {
+                Button(action: onPhotosSelected) {
+                    VStack(spacing: 12) {
+                        Image(systemName: "photo.on.rectangle")
+                            .font(.system(size: 40))
+                        Text("Photos Library")
+                            .font(.headline)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.blue.opacity(0.1))
+                    .cornerRadius(12)
+                }
+                .buttonStyle(.plain)
+
+                Button(action: onFileSelected) {
+                    VStack(spacing: 12) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 40))
+                        Text("Files")
+                            .font(.headline)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.green.opacity(0.1))
+                    .cornerRadius(12)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.borderedProminent)
-            Button(action: onFileSelected) {
-                Label("Choose from File", systemImage: "folder")
-            }
-            .buttonStyle(.bordered)
+            .padding(.horizontal, 8)
+
             Button("Cancel", role: .cancel, action: onCancel)
                 .buttonStyle(.borderless)
         }
         .padding(24)
-        .frame(minWidth: 280)
+        .frame(minWidth: 420)
     }
 }
 
 #Preview {
-    JobDetailView(job: Job(context: PersistenceController.preview.container.viewContext))
-        .environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)
+    JobDetailView(
+        job: Job(context: PersistenceController.preview.container.viewContext),
+        showingSettings: .constant(false)
+    )
+    .environment(\.managedObjectContext, PersistenceController.preview.container.viewContext)
 }

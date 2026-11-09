@@ -509,6 +509,23 @@ struct PhotoThumbnailView: View {
         return .exterior
     }
     
+    private var rotationDegrees: Double {
+        photo.rotationDegrees ?? 0
+    }
+    
+    private func rotatePhoto(by delta: Double) {
+        var next = (rotationDegrees + delta).truncatingRemainder(dividingBy: 360)
+        if next < 0 { next += 360 }
+        photo.rotationDegrees = next
+        do {
+            try viewContext.save()
+            print("MYDEBUG → Photo rotation saved: \(next)°")
+        } catch {
+            print("MYDEBUG → Failed to save rotation: \(error.localizedDescription)")
+            viewContext.rollback()
+        }
+    }
+    
     var body: some View {
         VStack(spacing: 4) {
             if let image = image {
@@ -517,6 +534,20 @@ struct PhotoThumbnailView: View {
                     .aspectRatio(contentMode: .fill)
                     .frame(width: 150, height: 150)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .rotationEffect(.degrees(rotationDegrees))
+                HStack(spacing: 8) {
+                    Button(action: { rotatePhoto(by: -90) }) {
+                        Image(systemName: "rotate.left")
+                            .font(.system(size: 14))
+                    }
+                    .buttonStyle(.bordered)
+                    Button(action: { rotatePhoto(by: 90) }) {
+                        Image(systemName: "rotate.right")
+                            .font(.system(size: 14))
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .frame(width: 150)
             } else if isLoading {
                 ProgressView()
                     .frame(width: 150, height: 150)

@@ -35,6 +35,37 @@ func drawNSImage(_ image: NSImage, in rect: CGRect, context: CGContext) {
     context.draw(cgImage, in: rect)
 }
 
+private enum ExportTestingTypesHelper {
+    private static let windowsTypeId = "windows"
+
+    static func enabledTypeIds(from job: Job) -> [String] {
+        guard let raw = job.enabledTestingTypeIds?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else {
+            return [windowsTypeId]
+        }
+        return raw
+            .components(separatedBy: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    static func displayName(for typeId: String, job: Job) -> String {
+        TestingTypesHelper.displayName(for: typeId, job: job)
+    }
+
+    static func isWindows(_ typeId: String) -> Bool {
+        typeId.caseInsensitiveCompare(windowsTypeId) == .orderedSame
+    }
+}
+
+private func reportStartingPageNumber(for job: Job) -> Int {
+    max(1, Int(job.reportStartingPageNumber))
+}
+
+private func reportPageLabel(logicalPage: Int, job: Job) -> String {
+    return "Page \(reportStartingPageNumber(for: job) + logicalPage - 1)"
+}
+
 /// Draw image with AspectFit - fits in rect, preserves aspect ratio, no stretch. Used for specimen photos.
 private func drawNSImageAspectFit(_ image: NSImage, in rect: CGRect, context: CGContext) {
     guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
@@ -123,8 +154,8 @@ private func drawCGImageAspectFill(cgImage: CGImage, in rect: CGRect, context: C
 private func transformImagePointToRect(dx: CGFloat, dy: CGFloat, imageWidth: CGFloat, imageHeight: CGFloat, rect: CGRect, scale: CGFloat, panX: CGFloat, panY: CGFloat, rotation: CGFloat) -> CGPoint {
     var px = (dx - imageWidth / 2 - panX) * scale
     var py = (dy - imageHeight / 2 - panY) * scale
-    let cosR = cos(-rotation)
-    let sinR = sin(-rotation)
+    let cosR = cos(rotation)
+    let sinR = sin(rotation)
     let rx = px * cosR - py * sinR
     let ry = px * sinR + py * cosR
     return CGPoint(x: rect.midX + rx, y: rect.midY + ry)
@@ -138,7 +169,7 @@ private func drawTransformedImage(cgImage: CGImage, in rect: CGRect, context: CG
     context.clip(to: rect)
     
     context.translateBy(x: rect.midX, y: rect.midY)
-    context.rotate(by: -rotation)
+    context.rotate(by: rotation)
     context.scaleBy(x: scale, y: scale)
     context.translateBy(x: -panX, y: -panY)
     context.translateBy(x: -imageWidth / 2, y: -imageHeight / 2)
@@ -207,12 +238,66 @@ private func formatAddressForExport(addressLine1: String, city: String?, state: 
     return components.isEmpty ? "" : components.joined(separator: ", ")
 }
 
+func blankToNil(_ value: String?) -> String? {
+    let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? nil : trimmed
+}
+
+/// First word for a one- or two-word owner with no tenant. Full owner name when a tenant is set or the owner name has three or more words.
+private func engineeringLetterSalutation(ownerName: String, tenantName: String?) -> String {
+    let owner = ownerName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let tenant = tenantName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let words = owner.split(whereSeparator: { $0.isWhitespace })
+    let greeted: String
+    if !tenant.isEmpty || words.count > 2 {
+        greeted = owner
+    } else {
+        greeted = words.first.map(String.init) ?? owner
+    }
+    return "Greetings \(greeted),"
+}
+
+let engineeringLetterParagraph2Default = "It is my professional opinion that the property sustained damage to the windows of the building due to cyclical wind pressure during Hurricane Milton.  Windows will need to be repaired or replaced.  All repairs must be in compliance with the Florida Building Code: Existing Building 2023."
+
+func engineeringLetterParagraph2IsCustom(_ text: String?) -> Bool {
+    let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return !trimmed.isEmpty && trimmed != engineeringLetterParagraph2Default
+}
+
+/// Job override, then team boilerplate, then the built-in storm-damage sentence.
+private func engineeringLetterParagraph2(for job: Job) -> String {
+    if engineeringLetterParagraph2IsCustom(job.customEngineeringLetterParagraph2),
+       let custom = job.customEngineeringLetterParagraph2 {
+        return custom
+    }
+    if let teamText = ReportBoilerplateDefaults.text(for: "engineering_letter_para2") {
+        return teamText
+    }
+    return engineeringLetterParagraph2Default
+}
+
 struct FieldResultsPackage {
     /// 3/4 inch in points (72 points per inch) - used to shift cover text, titles, and specimen content down
     private static let layoutShiftDown: CGFloat = 54
 
     let job: Job
     let exportDirectory: URL
+    /// Captured on main thread for PDF generation (Core Data job must not be read on background thread).
+    let equipmentCalibrationImage1Path: String?
+    /// Captured on main thread for PDF generation (fallback when image 1 is missing/stale).
+    let equipmentCalibrationImage2Path: String?
+
+    init(
+        job: Job,
+        exportDirectory: URL,
+        equipmentCalibrationImage1Path: String? = nil,
+        equipmentCalibrationImage2Path: String? = nil
+    ) {
+        self.job = job
+        self.exportDirectory = exportDirectory
+        self.equipmentCalibrationImage1Path = equipmentCalibrationImage1Path
+        self.equipmentCalibrationImage2Path = equipmentCalibrationImage2Path
+    }
     
     func generate() async throws -> URL {
         print("🚀 Starting export for job: \(job.jobId ?? "Unknown") in \(job.city ?? "Unknown")")
@@ -271,6 +356,12 @@ struct FieldResultsPackage {
     /// Windows in user-defined display order (for dots and report numbering).
     private var windowsInDisplayOrder: [Window] {
         windows.sorted { $0.displayOrder < $1.displayOrder }
+    }
+    
+    private struct SectionPhotoData {
+        let sectionPhoto: SectionPhoto
+        let image: NSImage
+        let caption: String
     }
     
     /// Sort windows alphabetically by title (text part) then numerically by number
@@ -498,8 +589,11 @@ struct FieldResultsPackage {
             return 
         }
         
-        // Create image with window dots
+        // Create image with window dots.
+        // Dots are 20pt on the 7.5-inch Specimen Locations image, not 20px of the source photo.
         let imageSize = image.size
+        let dotScale = imageSize.width / (7.5 * 72)
+        let windowDotDiameter = 20 * dotScale
         let imageWithDots = NSImage(size: imageSize, flipped: false) { rect in
             image.draw(in: rect)
             
@@ -510,11 +604,16 @@ struct FieldResultsPackage {
                 
                 let context = NSGraphicsContext.current!.cgContext
                 context.setFillColor(windowDotColor.cgColor)
-                context.fillEllipse(in: CGRect(x: point.x - 10, y: point.y - 10, width: 20, height: 20))
+                context.fillEllipse(in: CGRect(
+                    x: point.x - windowDotDiameter / 2,
+                    y: point.y - windowDotDiameter / 2,
+                    width: windowDotDiameter,
+                    height: windowDotDiameter
+                ))
                 
                 let displayNumber = "\(index + 1)"
                 let attributes: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.systemFont(ofSize: 12, weight: .bold),
+                    .font: NSFont.systemFont(ofSize: 12 * dotScale, weight: .bold),
                     .foregroundColor: NSColor.white
                 ]
                 let textSize = displayNumber.size(withAttributes: attributes)
@@ -738,7 +837,10 @@ struct FieldResultsPackage {
         let temporaryDocURL = try await generateDOCXReport(in: workingDirectory)
         
         let baseName = generateAddressNameIdentifier(for: job)
-        let timestamp = DateFormatter.exportDate.string(from: Date())
+        let timestampFormatter = DateFormatter()
+        timestampFormatter.dateFormat = "yyyyMMdd-HHmmss"
+        let timestamp = timestampFormatter.string(from: Date())
+        print("MYDEBUG →", "docx filename timestamp: \(timestamp)")
         let finalURL = reportsRoot.appendingPathComponent("\(baseName)-Report-\(timestamp).docx")
         
         try FileManager.default.removeItemIfExists(at: finalURL)
@@ -826,7 +928,7 @@ struct FieldResultsPackage {
                 case "Exterior":
                     defaultCaption = "Exterior Photo"
                 case "AAMA":
-                    defaultCaption = "AAMA Label Photo"
+                    defaultCaption = "Certification Label Photo"
                 default:
                     defaultCaption = "Specimen Photo"
                 }
@@ -847,9 +949,89 @@ struct FieldResultsPackage {
             }
         }
         
-        // Calculate total pages: cover, overview, [optional engineering letter], purpose/weather, damage locations, summary of findings, window testing summary, test+photo pages, calibration, parts of window, common terms, works cited, credentials
+        struct SectionPageInfo {
+            enum PageKind { case typeSummary, sectionDetail, sectionPhotos }
+            let kind: PageKind
+            let typeId: String
+            let sections: [SpecimenSection]
+            let section: SpecimenSection?
+            let sectionPhotos: [SectionPhotoData]?
+            let summaryChunk: (index: Int, of: Int)?
+        }
+        var sectionPages: [SectionPageInfo] = []
+        
+        let enabledNonWindowTypeIds = ExportTestingTypesHelper.enabledTypeIds(from: job).filter { !ExportTestingTypesHelper.isWindows($0) }
+        let allSpecimenSections = (job.specimenSections as? Set<SpecimenSection>) ?? []
+        let maxRowsPerSectionSummaryPage = Self.sectionSummaryTableMaxRows(pageRect: pageRect)
+        
+        for typeId in enabledNonWindowTypeIds {
+            let typeSections = allSpecimenSections.filter { $0.testingTypeId == typeId }
+                .sorted { a, b in
+                    if a.displayOrder != b.displayOrder { return a.displayOrder < b.displayOrder }
+                    return (a.sectionId ?? "") < (b.sectionId ?? "")
+                }
+            let totalTypeSummaryPages: Int
+            if typeSections.isEmpty {
+                totalTypeSummaryPages = 1
+                sectionPages.append(SectionPageInfo(
+                    kind: .typeSummary,
+                    typeId: typeId,
+                    sections: [],
+                    section: nil,
+                    sectionPhotos: nil,
+                    summaryChunk: nil
+                ))
+            } else {
+                totalTypeSummaryPages = (typeSections.count + maxRowsPerSectionSummaryPage - 1) / maxRowsPerSectionSummaryPage
+                var typeSummaryChunkIndex = 0
+                var typeSummaryStart = 0
+                while typeSummaryStart < typeSections.count {
+                    let end = min(typeSummaryStart + maxRowsPerSectionSummaryPage, typeSections.count)
+                    let chunk = Array(typeSections[typeSummaryStart..<end])
+                    typeSummaryChunkIndex += 1
+                    let chunkInfo: (index: Int, of: Int)? = totalTypeSummaryPages > 1
+                        ? (typeSummaryChunkIndex, totalTypeSummaryPages)
+                        : nil
+                    sectionPages.append(SectionPageInfo(
+                        kind: .typeSummary,
+                        typeId: typeId,
+                        sections: chunk,
+                        section: nil,
+                        sectionPhotos: nil,
+                        summaryChunk: chunkInfo
+                    ))
+                    typeSummaryStart = end
+                }
+            }
+            
+            for section in typeSections {
+                sectionPages.append(SectionPageInfo(kind: .sectionDetail, typeId: typeId, sections: [], section: section, sectionPhotos: nil, summaryChunk: nil))
+                
+                let sPhotos = ((section.sectionPhotos as? Set<SectionPhoto>) ?? [])
+                    .filter { $0.includeInReport }
+                    .sorted { ($0.createdAt ?? .distantPast) < ($1.createdAt ?? .distantPast) }
+                
+                var photoDataArray: [SectionPhotoData] = []
+                for sp in sPhotos {
+                    if let image = await fetchSectionPhotoImage(for: sp) {
+                        let caption = sp.notes?.isEmpty == false ? sp.notes! : "Section Photo"
+                        photoDataArray.append(SectionPhotoData(sectionPhoto: sp, image: image, caption: caption))
+                    }
+                }
+                
+                var photoIdx = 0
+                while photoIdx < photoDataArray.count {
+                    let pagePhotos = Array(photoDataArray[photoIdx..<min(photoIdx + 4, photoDataArray.count)])
+                    sectionPages.append(SectionPageInfo(kind: .sectionPhotos, typeId: typeId, sections: [], section: section, sectionPhotos: pagePhotos, summaryChunk: nil))
+                    photoIdx += 4
+                }
+            }
+        }
+        let sectionPageCount = sectionPages.count
+        
+        // Calculate total pages: cover, overview, [optional engineering letter], purpose/weather, damage locations, summary of findings, window testing summary, per-type section pages, test+photo pages, calibration, parts of window, common terms, works cited, credentials
         let basePages = 12 + (includeEngineeringLetter ? 1 : 0)
-        let totalPages = allPages.count + basePages
+        let totalPages = allPages.count + basePages + sectionPageCount
         
         // Generate PDF synchronously (pdfData is a synchronous method)
         // Capture self explicitly to avoid capture issues in closure
@@ -982,6 +1164,49 @@ struct FieldResultsPackage {
         self.drawWindowTestingSummaryPage(context: pdfContext, pageRect: pageRect, pageNumber: logicalPage, totalPages: totalPages, job: job, windows: windows)
         endPage()
         logicalPage += 1
+        
+        for sectionPageInfo in sectionPages {
+            beginPage(pageName: "Section \(sectionPageInfo.typeId)")
+            switch sectionPageInfo.kind {
+            case .typeSummary:
+                self.drawSectionTestingSummaryPage(
+                    context: pdfContext,
+                    pageRect: pageRect,
+                    pageNumber: logicalPage,
+                    totalPages: totalPages,
+                    job: job,
+                    typeId: sectionPageInfo.typeId,
+                    sections: sectionPageInfo.sections,
+                    summaryChunk: sectionPageInfo.summaryChunk
+                )
+            case .sectionDetail:
+                if let section = sectionPageInfo.section {
+                    self.drawSectionDetailPage(
+                        context: pdfContext,
+                        pageRect: pageRect,
+                        pageNumber: logicalPage,
+                        totalPages: totalPages,
+                        job: job,
+                        section: section,
+                        typeId: sectionPageInfo.typeId
+                    )
+                }
+            case .sectionPhotos:
+                if let photos = sectionPageInfo.sectionPhotos, let section = sectionPageInfo.section {
+                    self.drawSectionPhotoPage(
+                        context: pdfContext,
+                        pageRect: pageRect,
+                        pageNumber: logicalPage,
+                        totalPages: totalPages,
+                        job: job,
+                        sectionName: section.sectionName ?? "Section",
+                        photos: photos
+                    )
+                }
+            }
+            endPage()
+            logicalPage += 1
+        }
         
         for (index, pageInfo) in allPages.enumerated() {
             let logicalPageNumber = logicalPage + index
@@ -1169,12 +1394,16 @@ struct FieldResultsPackage {
         .font: footerFont,
         .foregroundColor: NSColor.gray
     ]
-    let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
-    let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
-    address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-    let pageText = "Page \(pageNumber) of \(totalPages)"
-    let pageTextSize = pageText.size(withAttributes: footerAttributes)
-    pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+    if job.includeAddressInReport ?? true {
+        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+        let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+        address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+    }
+    if job.includePageNumbersInReport ?? true {
+        let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
+        let pageTextSize = pageText.size(withAttributes: footerAttributes)
+        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+    }
 }
     
     // private func drawTestPage(context: CGContext, pageRect: CGRect, window: Window, pageNumber: Int, totalPages: Int, job: Job) {
@@ -1305,7 +1534,7 @@ struct FieldResultsPackage {
     //     let footerY = pageRect.height - 50  // 50 points from bottom
     //     address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
         
-    //     let pageText = "Page \(pageNumber) of \(totalPages)"
+    //     let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
     //     let pageTextSize = pageText.size(withAttributes: footerAttributes)
     //     pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
     // }
@@ -1428,18 +1657,6 @@ struct FieldResultsPackage {
         currentY -= 15
         
         drawLabelValue(label: "Interior Finishes:", value: "Drywall", y: currentY)
-        currentY -= 15
-        
-        drawLabelValue(label: "SF/CW Window Design Pressure:", value: "Unknown", y: currentY)
-        currentY -= 15
-        
-        drawLabelValue(label: "Building Pressure - Corner (PSF):", value: "Unknown", y: currentY)
-        currentY -= 15
-        
-        drawLabelValue(label: "Building Pressure - Field (PSF):", value: "Unknown", y: currentY)
-        currentY -= 15
-        
-        drawLabelValue(label: "Building Corner Distance (Feet):", value: "Unknown", y: currentY)
         currentY -= 15
         
         drawLabelValue(label: "Specimen Plumb, Level and Square:", value: "Yes, within industry standards", y: currentY)
@@ -1654,19 +1871,62 @@ struct FieldResultsPackage {
         ownerAddress.draw(at: CGPoint(x: 200, y: currentY), withAttributes: metadataAttributes)
         currentY -= 25
         
-        // 3. Load and draw overhead image below metadata (~1/3 page height, matching iOS)
+        // 3. Draw overview images side-by-side: overhead (left) and front of property (right).
         let overheadImage = loadOverheadImageForExport(job: job)
-        
+        let frontOfHomeImage: NSImage? = {
+            guard let path = job.frontOfHomeImagePath else { return nil }
+            return loadFrontOfHomeImage(from: path)
+        }()
+
+        // Add extra whitespace after address block before overview images.
+        let imageTopFromTop: CGFloat = 380
+        let imageSectionTopY = pageRect.height - imageTopFromTop
+        let imageSectionBottomY: CGFloat = 135
+        let availableImageHeight = max(120, imageSectionTopY - imageSectionBottomY)
+        let frameHeight = min(220, availableImageHeight)
+
+        let horizontalMargin: CGFloat = 50
+        let interImageSpacing: CGFloat = 20
+        let totalWidth = pageRect.width - (horizontalMargin * 2)
+        let frameWidth = (totalWidth - interImageSpacing) / 2
+        let frameBottomY = imageSectionTopY - frameHeight
+        let leftFrame = CGRect(x: horizontalMargin, y: frameBottomY, width: frameWidth, height: frameHeight)
+        let rightFrame = CGRect(x: horizontalMargin + frameWidth + interImageSpacing, y: frameBottomY, width: frameWidth, height: frameHeight)
+
+        func drawFramedOverviewImage(_ image: NSImage, in frame: CGRect) {
+            context.saveGState()
+            context.setFillColor(NSColor.white.cgColor)
+            context.fill(frame)
+            context.setStrokeColor(NSColor.lightGray.cgColor)
+            context.setLineWidth(1)
+            context.stroke(frame)
+            context.restoreGState()
+
+            let inset = frame.insetBy(dx: 4, dy: 4)
+            // Smart crop to fill frame: center-crop while preserving aspect ratio.
+            // This trims top/bottom or left/right as needed and avoids letterboxing.
+            drawNSImageAspectFill(image, in: inset, context: context)
+        }
+
+        let imageLabelAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.boldSystemFont(ofSize: 11),
+            .foregroundColor: NSColor.black
+        ]
+
         if let image = overheadImage {
-            let targetHeight: CGFloat = pageRect.height / 3
-            let imageWidth = targetHeight * (image.size.width / image.size.height)
-            let imageHeight = targetHeight
-            let imageX = (pageRect.width - imageWidth) / 2
-            // Image top (in from-top terms): metadata ends at currentY (lowest of the 5 lines). currentY is now 80 - 125 = -45? No - we started at metadataStartY = pageRect.height - 80, then went currentY -= 25 four times, so currentY = pageRect.height - 180. So bottom of metadata block is at pageRect.height - 180. Image should start 150pt below title in iOS terms: title at 60 from top, metadata to 60+20+125=205 from top, image at 205+150=355 from top. So imageTopFromTop = 355, imageBottomY = pageRect.height - 355 - imageHeight.
-            let imageTopFromTop: CGFloat = 355
-            let imageBottomY = pageRect.height - imageTopFromTop - imageHeight
-            let imageRect = CGRect(x: imageX, y: imageBottomY, width: imageWidth, height: imageHeight)
-            drawOverheadImage(image, in: imageRect, context: context, job: job)
+            drawFramedOverviewImage(image, in: leftFrame)
+            "Overhead".draw(
+                at: CGPoint(x: leftFrame.minX, y: leftFrame.minY - 18),
+                withAttributes: imageLabelAttributes
+            )
+        }
+
+        if let image = frontOfHomeImage {
+            drawFramedOverviewImage(image, in: rightFrame)
+            "Front of Property".draw(
+                at: CGPoint(x: rightFrame.minX, y: rightFrame.minY - 18),
+                withAttributes: imageLabelAttributes
+            )
         }
         
         // 4. Footer at bottom
@@ -1675,12 +1935,16 @@ struct FieldResultsPackage {
             .font: footerFont,
             .foregroundColor: NSColor.gray
         ]
-        let address = "\(addressToUse), \(job.city ?? ""), \(job.state ?? "") \(job.zip ?? "")".uppercased()
         let footerY: CGFloat = 50
-        address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-        let pageText = "Page \(pageNumber) of \(totalPages)"
-        let pageTextSize = pageText.size(withAttributes: footerAttributes)
-        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        if job.includeAddressInReport ?? true {
+            let address = "\(addressToUse), \(job.city ?? ""), \(job.state ?? "") \(job.zip ?? "")".uppercased()
+            address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        }
+        if job.includePageNumbersInReport ?? true {
+            let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
+            let pageTextSize = pageText.size(withAttributes: footerAttributes)
+            pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        }
     }
     
     private func loadEngineerStampImage() -> NSImage? {
@@ -1770,8 +2034,7 @@ struct FieldResultsPackage {
             .foregroundColor: NSColor.black
         ]
         // Extract first name from client name if possible
-        let firstName = clientName.components(separatedBy: " ").first ?? clientName
-        let salutation = "Greetings \(firstName),"
+        let salutation = engineeringLetterSalutation(ownerName: clientName, tenantName: job.tenantName)
         salutation.draw(at: CGPoint(x: 50, y: currentY), withAttributes: salutationAttributes)
         currentY -= 18 //38  // Space after salutation: "under my direct supervision" needs to come down
         
@@ -1800,7 +2063,7 @@ struct FieldResultsPackage {
         currentY -= paragraph1Height + 28  // Extra gap so paragraph2 doesn't cover "supervision" above
         
         // Second paragraph
-        let paragraph2 = "It is my professional opinion that the property sustained damage to the windows of the building during Hurricane Milton. Windows will need to be repaired or replaced. All repairs must be in compliance with the Florida Building Code: Existing Building 2023."
+        let paragraph2 = engineeringLetterParagraph2(for: job)
         let paragraph2Bounding = paragraph2.boundingRect(with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: bodyAttributesWithSpacing, context: nil)
         let paragraph2Height = ceil(paragraph2Bounding.height) + 2  // Buffer to avoid clipping (matches drawBlock)
         let paragraph2Rect = CGRect(x: 50, y: currentY - paragraph2Height, width: contentWidth, height: paragraph2Height)
@@ -1833,6 +2096,35 @@ struct FieldResultsPackage {
         "K. Renevier, P.E.".draw(at: CGPoint(x: 50, y: currentY), withAttributes: signatoryAttributes)
         currentY -= 20
         "Stuart Jay Clarke".draw(at: CGPoint(x: 50, y: currentY), withAttributes: signatoryAttributes)
+        let signatureY = currentY
+        
+        // Digital signature disclaimer, pinned above the footer. PDF Y increases upward, so the rect origin is its bottom edge.
+        let disclaimerFont = NSFont.systemFont(ofSize: 10)
+        let disclaimerAttributes: [NSAttributedString.Key: Any] = [
+            .font: disclaimerFont,
+            .foregroundColor: NSColor.black
+        ]
+        let disclaimerText = "Kyle Renevier, State of Florida, Professional Engineer, License No. 98372. This item has been digitally signed and sealed by Kyle Renevier on the date indicated here. Printed copies of this document are not considered signed and sealed and the signature must be verified on any electronic copies."
+        let disclaimerWidth = pageRect.width - 100
+        let disclaimerMeasured = disclaimerText.boundingRect(
+            with: CGSize(width: disclaimerWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: disclaimerAttributes,
+            context: nil
+        )
+        let disclaimerHeight = ceil(disclaimerMeasured.height) + 2
+        let footerFont = NSFont.systemFont(ofSize: 10)
+        let footerAttributes: [NSAttributedString.Key: Any] = [
+            .font: footerFont,
+            .foregroundColor: NSColor.gray
+        ]
+        let footerY: CGFloat = 50
+        let disclaimerRect = CGRect(
+            x: 50,
+            y: footerY + footerFont.lineHeight + 18,
+            width: disclaimerWidth,
+            height: disclaimerHeight
+        )
         
         // Engineer seal image (right side) - match iOS: 144pt (2 inches)
         let sealSize: CGFloat = 144  // Exactly 2 inches (72 points per inch), match iOS
@@ -1851,39 +2143,29 @@ struct FieldResultsPackage {
                 sealHeight = sealSize
             }
             let sealX = pageRect.width - 50 - sealWidth
-            let sealY = currentY - 40  // Lower on page (PDF Y increases upward; negative offset = down)
+            var sealY = signatureY - 40  // Beside the names (PDF Y increases upward; lower origin = lower on the page)
+            if sealY < disclaimerRect.maxY + 8 {
+                sealY = disclaimerRect.maxY + 8
+            }
             let sealRect = CGRect(x: sealX, y: sealY, width: sealWidth, height: sealHeight)
             drawNSImage(sealImage, in: sealRect, context: context)
+            print("MYDEBUG →", "engineering letter seal \(sealRect) disclaimer \(disclaimerRect)")
         }
         
-        // Digital signature disclaimer - draw in flow below signatories, then fixed footer at bottom
-        let disclaimerFont = NSFont.systemFont(ofSize: 10)
-        let disclaimerAttributes: [NSAttributedString.Key: Any] = [
-            .font: disclaimerFont,
-            .foregroundColor: NSColor.black
-        ]
-        let disclaimerText = "Kyle Renevier, State of Florida, Professional Engineer, License No. 98372. This item has been digitally signed and sealed by Kyle Renevier on the date indicated here. Printed copies of this document are not considered signed and sealed and the signature must be verified on any electronic copies."
-        currentY -= 50  // Gap after signatories: moves "Kyle Renevier State of Florida" paragraph down
-        let disclaimerHeight: CGFloat = 80
-        let disclaimerRect = CGRect(x: 50, y: currentY - disclaimerHeight, width: pageRect.width - 100, height: disclaimerHeight)
         disclaimerText.draw(in: disclaimerRect, withAttributes: disclaimerAttributes)
         
         // Footer at bottom
-        let footerFont = NSFont.systemFont(ofSize: 10)
-        let footerAttributes: [NSAttributedString.Key: Any] = [
-            .font: footerFont,
-            .foregroundColor: NSColor.gray
-        ]
-        
-        let address = "\(addressToUse.isEmpty ? "" : addressToUse.uppercased()), \(job.city?.uppercased() ?? ""), \(job.state?.uppercased() ?? "") \(job.zip ?? "")".trimmingCharacters(in: CharacterSet(charactersIn: ", "))
-        let footerY: CGFloat = 50
-        if !address.isEmpty {
-            address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        if job.includeAddressInReport ?? true {
+            let address = "\(addressToUse.isEmpty ? "" : addressToUse.uppercased()), \(job.city?.uppercased() ?? ""), \(job.state?.uppercased() ?? "") \(job.zip ?? "")".trimmingCharacters(in: CharacterSet(charactersIn: ", "))
+            if !address.isEmpty {
+                address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+            }
         }
-        
-        let pageText = "Page \(pageNumber) of \(totalPages)"
-        let pageTextSize = pageText.size(withAttributes: footerAttributes)
-        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        if job.includePageNumbersInReport ?? true {
+            let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
+            let pageTextSize = pageText.size(withAttributes: footerAttributes)
+            pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        }
     }
     
     private func drawSectionHeader(context: CGContext, pageRect: CGRect, title: String, startY: CGFloat) -> CGFloat {
@@ -2060,13 +2342,426 @@ struct FieldResultsPackage {
             .foregroundColor: NSColor.gray
         ]
         
-        let footerAddress = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
         let footerY: CGFloat = 50
-        footerAddress.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        if job.includeAddressInReport ?? true {
+            let footerAddress = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+            footerAddress.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        }
+        if job.includePageNumbersInReport ?? true {
+            let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
+            let pageTextSize = pageText.size(withAttributes: footerAttributes)
+            pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        }
+    }
+    
+    private static func sectionSummaryTableMaxRows(pageRect: CGRect) -> Int {
+        _ = pageRect
+        return 12
+    }
+    
+    private func fetchSectionPhotoImage(for sectionPhoto: SectionPhoto) async -> NSImage? {
+        let photoId = sectionPhoto.photoId ?? "unknown"
+        if sectionPhoto.photoSource == "FileSystem", let filePath = sectionPhoto.filePath {
+            let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let fullPath = documentsDirectory.appendingPathComponent(filePath)
+            if FileManager.default.fileExists(atPath: fullPath.path),
+               let image = NSImage(contentsOfFile: fullPath.path) {
+                return image
+            }
+        }
+        guard let localIdentifier = sectionPhoto.localIdentifier else {
+            print("MYDEBUG →", "Section photo skipped - no file or local id (Photo ID: \(photoId))")
+            return nil
+        }
+        let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
+        guard let asset = fetchResult.firstObject else {
+            print("MYDEBUG →", "Section photo skipped - asset not found (Photo ID: \(photoId))")
+            return nil
+        }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<NSImage?, Never>) in
+            let imageManager = PHImageManager.default()
+            let options = PHImageRequestOptions()
+            options.isSynchronous = false
+            options.deliveryMode = .highQualityFormat
+            imageManager.requestImage(for: asset, targetSize: PHImageManagerMaximumSize, contentMode: .aspectFit, options: options) { image, _ in
+                continuation.resume(returning: image)
+            }
+        }
+    }
+    
+    private func drawSectionTestingSummaryPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job, typeId: String, sections: [SpecimenSection], summaryChunk: (index: Int, of: Int)?) {
+        let titleFont = NSFont.boldSystemFont(ofSize: 24)
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: titleFont,
+            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)
+        ]
+        let titleHeight: CGFloat = 32
+        let titleYFromTop: CGFloat = 50
+        let typeTitleBase = ExportTestingTypesHelper.displayName(for: typeId, job: job)
+        let titleText = "\(typeTitleBase.uppercased()) TESTING"
+        let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
+        titleText.draw(in: titleRect, withAttributes: titleAttributes)
         
-        let pageText = "Page \(pageNumber) of \(totalPages)"
-        let pageTextSize = pageText.size(withAttributes: footerAttributes)
-        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        let boxMargin: CGFloat = 50
+        let boxX = boxMargin
+        let boxTopY = titleRect.minY - 45
+        let boxWidth = pageRect.width - (boxMargin * 2)
+        
+        let headerBarHeight: CGFloat = 30
+        let headerBarRect = CGRect(x: boxX, y: boxTopY - headerBarHeight, width: boxWidth, height: headerBarHeight)
+        context.setFillColor(NSColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1.0).cgColor)
+        context.fill(headerBarRect)
+        
+        let headerFont = NSFont.boldSystemFont(ofSize: 14)
+        let headerTextAttributes: [NSAttributedString.Key: Any] = [
+            .font: headerFont,
+            .foregroundColor: NSColor.white
+        ]
+        let headerText = "\(typeTitleBase) Testing Summary"
+        let headerTextSize = headerText.size(withAttributes: headerTextAttributes)
+        let headerTextX = boxX + 10
+        let headerTextY = boxTopY - headerBarHeight + (headerBarHeight - headerTextSize.height) / 2
+        headerText.draw(at: CGPoint(x: headerTextX, y: headerTextY), withAttributes: headerTextAttributes)
+        if let chunk = summaryChunk {
+            let subFont = NSFont.systemFont(ofSize: 10)
+            let subAttributes: [NSAttributedString.Key: Any] = [.font: subFont, .foregroundColor: NSColor.white]
+            let subText = "Summary \(chunk.index) of \(chunk.of)"
+            let subSize = subText.size(withAttributes: subAttributes)
+            subText.draw(at: CGPoint(x: boxX + boxWidth - 10 - subSize.width, y: headerTextY), withAttributes: subAttributes)
+        }
+        
+        let addressY = boxTopY - headerBarHeight - 22
+        let addressFont = NSFont.systemFont(ofSize: 11)
+        let addressAttributes: [NSAttributedString.Key: Any] = [.font: addressFont, .foregroundColor: NSColor.black]
+        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+        var addressComponents: [String] = []
+        if !addressToUse.isEmpty { addressComponents.append(addressToUse) }
+        if let city = job.city, !city.isEmpty { addressComponents.append(city) }
+        if let state = job.state, !state.isEmpty { addressComponents.append(state) }
+        if let zip = job.zip, !zip.isEmpty { addressComponents.append(zip) }
+        let addressString = addressComponents.joined(separator: ", ")
+        addressString.draw(at: CGPoint(x: boxX + 10, y: addressY), withAttributes: addressAttributes)
+        
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "MMM d, yyyy"
+        let jobInsp = job.inspectionDate
+        let hasMixed = sections.contains { s in
+            let a = SpecimenEnvironmental.effectiveInspectionDate(section: s, job: job).map { dateFormatter.string(from: $0) } ?? "N/A"
+            let b = jobInsp.map { dateFormatter.string(from: $0) } ?? "N/A"
+            return a != b
+        }
+        let dateLine = hasMixed ? "Inspection dates: per column →" : ("Inspection Date: " + (jobInsp.map { dateFormatter.string(from: $0) } ?? "N/A"))
+        let dateSize = dateLine.size(withAttributes: addressAttributes)
+        dateLine.draw(at: CGPoint(x: boxX + boxWidth - dateSize.width - 10, y: addressY), withAttributes: addressAttributes)
+        
+        let tableStartY = addressY - 28
+        let rowHeight: CGFloat = 25
+        let headerRowHeight: CGFloat = 25
+        let colWidths: [CGFloat] = [72, 120, 130, 86]
+        let totalTableWidth = colWidths.reduce(0, +)
+        let tableX = boxX + (boxWidth - totalTableWidth) / 2
+        
+        let headerFontSize = NSFont.boldSystemFont(ofSize: 11)
+        let headerRowAttributes: [NSAttributedString.Key: Any] = [.font: headerFontSize, .foregroundColor: NSColor.black]
+        let headers = ["Results", "Section", "Notes", "Insp."]
+        var currentX = tableX
+        for (index, header) in headers.enumerated() {
+            header.draw(at: CGPoint(x: currentX + 5, y: tableStartY - 12), withAttributes: headerRowAttributes)
+            currentX += colWidths[index]
+        }
+        
+        let headerLineY = tableStartY - headerRowHeight - 12
+        context.setStrokeColor(NSColor.black.cgColor)
+        context.setLineWidth(1.0)
+        context.move(to: CGPoint(x: tableX, y: headerLineY))
+        context.addLine(to: CGPoint(x: tableX + totalTableWidth, y: headerLineY))
+        context.strokePath()
+        
+        let dataFont = NSFont.systemFont(ofSize: 11)
+        let dataAttributes: [NSAttributedString.Key: Any] = [.font: dataFont, .foregroundColor: NSColor.black]
+        let shortInsp = DateFormatter()
+        shortInsp.dateFormat = "M/d/yy"
+        
+        var currentRowY = headerLineY - 22
+        if sections.isEmpty {
+            let emptyMsg = "No sections recorded for this testing type."
+            emptyMsg.draw(at: CGPoint(x: tableX + 5, y: currentRowY), withAttributes: dataAttributes)
+            currentRowY -= rowHeight
+        } else {
+            for section in sections {
+                let result = section.result ?? "Pending"
+                let name = section.sectionName ?? "Section"
+                let notes = (section.notes ?? "").prefix(42)
+                let notesText = notes.count < (section.notes ?? "").count ? "\(notes)..." : String(notes)
+                let inspCell = SpecimenEnvironmental.effectiveInspectionDate(section: section, job: job).map { shortInsp.string(from: $0) } ?? "—"
+                let rowData: [String] = [result, name, notesText, inspCell]
+                currentX = tableX
+                for (index, data) in rowData.enumerated() {
+                    data.draw(at: CGPoint(x: currentX + 5, y: currentRowY), withAttributes: dataAttributes)
+                    currentX += colWidths[index]
+                }
+                currentRowY -= rowHeight
+            }
+        }
+        
+        let boxBottomY = currentRowY - 20
+        let boxHeight = boxTopY - boxBottomY
+        context.setStrokeColor(NSColor.black.cgColor)
+        context.setLineWidth(1.0)
+        context.stroke(CGRect(x: boxX, y: boxBottomY, width: boxWidth, height: boxHeight))
+        
+        let footerFont = NSFont.systemFont(ofSize: 10)
+        let footerAttributes: [NSAttributedString.Key: Any] = [.font: footerFont, .foregroundColor: NSColor.gray]
+        let footerY: CGFloat = 50
+        if job.includeAddressInReport ?? true {
+            let footerAddress = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+            footerAddress.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        }
+        if job.includePageNumbersInReport ?? true {
+            let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
+            let pageTextSize = pageText.size(withAttributes: footerAttributes)
+            pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        }
+    }
+    
+    private func drawSectionDetailPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job, section: SpecimenSection, typeId: String) {
+        let typeTitleBase = ExportTestingTypesHelper.displayName(for: typeId, job: job)
+        let titleFont = NSFont.boldSystemFont(ofSize: 24)
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: titleFont,
+            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)
+        ]
+        let titleHeight: CGFloat = 30
+        let titleYFromTop: CGFloat = 50
+        let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
+        "\(typeTitleBase.uppercased()) TESTING".draw(in: titleRect, withAttributes: titleAttributes)
+        
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "MMM d, yyyy"
+        let eff = SpecimenEnvironmental.effectiveInspectionDate(section: section, job: job)
+        let inspDateStr = "Inspection Date: " + (eff.map { dateFormatter.string(from: $0) } ?? "N/A")
+        let dateFontSmall = NSFont.systemFont(ofSize: 11)
+        let dateAttrs: [NSAttributedString.Key: Any] = [.font: dateFontSmall, .foregroundColor: NSColor.black]
+        let dateSize = inspDateStr.size(withAttributes: dateAttrs)
+        inspDateStr.draw(at: CGPoint(x: pageRect.width - 50 - dateSize.width, y: titleRect.midY - dateSize.height / 2), withAttributes: dateAttrs)
+        
+        var currentY = titleRect.minY - 25
+        
+        let labelFont = NSFont.boldSystemFont(ofSize: 12)
+        let labelAttributes: [NSAttributedString.Key: Any] = [
+            .font: labelFont,
+            .foregroundColor: NSColor.black
+        ]
+        let valueFont = NSFont.systemFont(ofSize: 11)
+        let valueAttributes: [NSAttributedString.Key: Any] = [
+            .font: valueFont,
+            .foregroundColor: NSColor.black
+        ]
+        
+        let sectionName = section.sectionName ?? "Section"
+        "Section:".draw(at: CGPoint(x: 60, y: currentY), withAttributes: labelAttributes)
+        sectionName.draw(at: CGPoint(x: 200, y: currentY), withAttributes: valueAttributes)
+        currentY -= labelFont.lineHeight + 8
+        
+        let result = section.result ?? "Pending"
+        "Result:".draw(at: CGPoint(x: 60, y: currentY), withAttributes: labelAttributes)
+        let resultColor: NSColor = result == "Pass" ? .systemGreen : (result == "Fail" ? .systemRed : .black)
+        let resultAttributes: [NSAttributedString.Key: Any] = [.font: valueFont, .foregroundColor: resultColor]
+        result.draw(at: CGPoint(x: 200, y: currentY), withAttributes: resultAttributes)
+        currentY -= labelFont.lineHeight + 8
+        
+        if let locationNote = section.locationNote, !locationNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            "Location:".draw(at: CGPoint(x: 60, y: currentY), withAttributes: labelAttributes)
+            locationNote.draw(at: CGPoint(x: 200, y: currentY), withAttributes: valueAttributes)
+            currentY -= labelFont.lineHeight + 8
+        }
+        
+        currentY -= 10
+        currentY = drawSectionHeader(context: context, pageRect: pageRect, title: "Notes and Comments:", startY: currentY)
+        currentY -= 5
+        
+        let notesText = (section.notes ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !notesText.isEmpty {
+            let paragraphStyle = NSMutableParagraphStyle()
+            paragraphStyle.lineBreakMode = .byWordWrapping
+            paragraphStyle.alignment = .left
+            let notesAttributes: [NSAttributedString.Key: Any] = [
+                .font: valueFont,
+                .foregroundColor: NSColor.black,
+                .paragraphStyle: paragraphStyle
+            ]
+            let textWidth = pageRect.width - 120
+            let attrNotes = NSAttributedString(string: notesText, attributes: notesAttributes)
+            let boundingRect = attrNotes.boundingRect(
+                with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                context: nil
+            )
+            let footerY = CGFloat(50) + valueFont.lineHeight * 2
+            let maxHeight = currentY - footerY - 10
+            let textHeight = min(ceil(boundingRect.height) + 15, maxHeight)
+            let pdfY = currentY - textHeight
+            attrNotes.draw(in: CGRect(x: 60, y: pdfY, width: textWidth, height: textHeight))
+            currentY = pdfY - 5
+        } else {
+            let placeholder = "No notes recorded."
+            placeholder.draw(at: CGPoint(x: 60, y: currentY), withAttributes: valueAttributes)
+        }
+        
+        let footerFont = NSFont.systemFont(ofSize: 10)
+        let footerAttributes: [NSAttributedString.Key: Any] = [
+            .font: footerFont,
+            .foregroundColor: NSColor.gray
+        ]
+        let footerY: CGFloat = 50
+        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+        if job.includeAddressInReport ?? true {
+            let footerAddress = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+            footerAddress.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        }
+        if job.includePageNumbersInReport ?? true {
+            let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
+            let pageTextSize = pageText.size(withAttributes: footerAttributes)
+            pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        }
+    }
+    
+    private func drawSectionPhotoPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job, sectionName: String, photos: [SectionPhotoData]) {
+        let titleFont = NSFont.boldSystemFont(ofSize: 24)
+        let titleAttributes: [NSAttributedString.Key: Any] = [
+            .font: titleFont,
+            .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)
+        ]
+        let titleHeight: CGFloat = 30
+        let titleYFromTop: CGFloat = 30
+        let titleRect = CGRect(x: 50, y: pageRect.height - titleYFromTop - titleHeight, width: pageRect.width - 100, height: titleHeight)
+        sectionName.draw(in: titleRect, withAttributes: titleAttributes)
+        
+        let photoSize: CGFloat = 250
+        let spacing: CGFloat = 20
+        let startX: CGFloat = 50
+        let captionFont = NSFont.systemFont(ofSize: 10)
+        let captionParagraphStyle = NSMutableParagraphStyle()
+        captionParagraphStyle.lineBreakMode = .byWordWrapping
+        captionParagraphStyle.alignment = .left
+        let captionAttributes: [NSAttributedString.Key: Any] = [
+            .font: captionFont,
+            .foregroundColor: NSColor.black,
+            .paragraphStyle: captionParagraphStyle
+        ]
+        let captionLineHeight = captionFont.lineHeight
+        let minimumHeightForTwoLines = captionLineHeight * 2 + 4
+        let spacingFromTitle: CGFloat = photos.count == 2 ? 20 : 50
+        let shiftUp: CGFloat = 25
+        let rowSpacing: CGFloat = 50
+        let totalPhotoHeight = photoSize + 60
+        let startYFromTop: CGFloat = (photos.count == 2
+            ? max(titleYFromTop + titleHeight + 20, (pageRect.height - 50 - totalPhotoHeight) / 2)
+            : titleYFromTop + titleHeight + spacingFromTitle) - shiftUp
+        var captionRects: [(NSAttributedString, CGRect)] = []
+        
+        for (index, photoData) in photos.enumerated() {
+            let row = index / 2
+            let col = index % 2
+            let x = startX + CGFloat(col) * (photoSize + spacing)
+            let photoYFromTop = startYFromTop + CGFloat(row) * (photoSize + spacing + rowSpacing)
+            
+            let originalImage = photoData.image
+            let originalImageSize = originalImage.size
+            let processedImage: NSImage
+            if let scaledImage = loadScaledImage(originalImage, maxDimension: 750),
+               let compressedImage = compressImage(scaledImage, quality: 0.5) {
+                processedImage = compressedImage
+            } else {
+                processedImage = originalImage
+            }
+            
+            let imageRectBottomUp = CGRect(x: x, y: pageRect.height - photoYFromTop - photoSize, width: photoSize, height: photoSize)
+            let rotationDegrees = CGFloat(photoData.sectionPhoto.rotationDegrees ?? 0)
+            let rotationRadians = rotationDegrees * .pi / 180
+            let zoomScale = CGFloat(1.0)
+            let panX = CGFloat(0)
+            let panY = CGFloat(0)
+            let hasZoomPan = abs(zoomScale - 1.0) > 0.001 || abs(panX) > 0.5 || abs(panY) > 0.5
+            
+            var photoTransform: (pixelWidth: CGFloat, pixelHeight: CGFloat, scale: CGFloat, clampedPanX: CGFloat, clampedPanY: CGFloat)?
+            if let cgImage = processedImage.cgImage(forProposedRect: nil, context: nil, hints: nil) ?? processedImage.tiffRepresentation.flatMap({ NSBitmapImageRep(data: $0) })?.cgImage {
+                let pixelWidth = CGFloat(cgImage.width)
+                let pixelHeight = CGFloat(cgImage.height)
+                let maxSide = photoSize
+                let baseScale = max(maxSide / pixelWidth, maxSide / pixelHeight)
+                let scale = baseScale * zoomScale
+                let clampedPanX: CGFloat
+                let clampedPanY: CGFloat
+                if hasZoomPan {
+                    let maxPanX = max(0, (pixelWidth * scale - maxSide) / 2 / scale)
+                    let maxPanY = max(0, (pixelHeight * scale - maxSide) / 2 / scale)
+                    clampedPanX = min(maxPanX, max(-maxPanX, panX))
+                    clampedPanY = min(maxPanY, max(-maxPanY, panY))
+                } else {
+                    clampedPanX = 0
+                    clampedPanY = 0
+                }
+                photoTransform = (pixelWidth, pixelHeight, scale, clampedPanX, clampedPanY)
+                drawTransformedImage(cgImage: cgImage, in: imageRectBottomUp, context: context, scale: scale, panX: clampedPanX, panY: clampedPanY, rotation: rotationRadians)
+            } else {
+                drawNSImageAspectFill(processedImage, in: imageRectBottomUp, context: context)
+            }
+            
+            let arrowX = photoData.sectionPhoto.arrowXPosition
+            let arrowY = photoData.sectionPhoto.arrowYPosition
+            if arrowX > 0, arrowY > 0, let direction = photoData.sectionPhoto.arrowDirection {
+                let displayedImageSize = CGSize(width: photoSize, height: photoSize)
+                let pdfArrowX: CGFloat
+                let pdfArrowY: CGFloat
+                if let t = photoTransform {
+                    let pt = transformImagePointToRect(dx: CGFloat(arrowX), dy: t.pixelHeight - CGFloat(arrowY), imageWidth: t.pixelWidth, imageHeight: t.pixelHeight, rect: imageRectBottomUp, scale: t.scale, panX: t.clampedPanX, panY: t.clampedPanY, rotation: rotationRadians)
+                    pdfArrowX = pt.x
+                    pdfArrowY = pt.y
+                } else {
+                    let arrowXFromLeft = convertImageXToFrameX(CGFloat(arrowX), frameSize: displayedImageSize, originalImageSize: originalImageSize)
+                    let arrowYFromTop = convertImageYToFrameY(CGFloat(arrowY), frameSize: displayedImageSize, originalImageSize: originalImageSize)
+                    pdfArrowX = x + arrowXFromLeft
+                    pdfArrowY = pageRect.height - (photoYFromTop + arrowYFromTop)
+                }
+                drawArrow(context: context, at: CGPoint(x: pdfArrowX, y: pdfArrowY), direction: direction)
+            }
+            
+            let caption = photoData.caption
+            let attributedCaption = NSAttributedString(string: caption, attributes: captionAttributes)
+            let captionBoundingRect = attributedCaption.boundingRect(
+                with: CGSize(width: photoSize, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                context: nil
+            )
+            let captionHeight = max(ceil(captionBoundingRect.height) + 2, minimumHeightForTwoLines)
+            let captionOffset: CGFloat = 5
+            let captionYFromTop = photoYFromTop + photoSize + captionOffset
+            let captionPdfY = pageRect.height - captionYFromTop - captionHeight
+            let captionRect = CGRect(x: x, y: captionPdfY, width: photoSize, height: captionHeight)
+            captionRects.append((attributedCaption, captionRect))
+        }
+        
+        for (attributedCaption, captionRect) in captionRects {
+            attributedCaption.draw(in: captionRect)
+        }
+        
+        let footerFont = NSFont.systemFont(ofSize: 10)
+        let footerAttributes: [NSAttributedString.Key: Any] = [
+            .font: footerFont,
+            .foregroundColor: NSColor.gray
+        ]
+        let footerY: CGFloat = 50
+        if job.includeAddressInReport ?? true {
+            let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+            let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+            address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        }
+        if job.includePageNumbersInReport ?? true {
+            let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
+            let pageTextSize = pageText.size(withAttributes: footerAttributes)
+            pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        }
     }
     
     private func drawPurposeObservationsWeatherPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
@@ -2096,14 +2791,30 @@ struct FieldResultsPackage {
         // PURPOSE
         currentYFromTop = drawWrappedText("PURPOSE:", attributes: headerAttributes, yFromTop: currentYFromTop, width: contentWidth)
         currentYFromTop += 8
-        let purposeText = "True Reports was hired by the insured to inspect the property for a damage claim. The date of loss (DOL) is indicated as October 9, 2024. The goal of this inspection was to provide a professional opinion on the cause, origin, extent, and repairability of reported and observed damage."
+        let purposeDefault = "True Reports was hired by the insured to inspect the property for a damage claim. The date of loss (DOL) is indicated as October 9, 2024. The goal of this inspection was to provide a professional opinion on the cause, origin, extent, and repairability of reported and observed damage."
+        let purposeText: String
+        if let custom = job.customPurposeText, !custom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            purposeText = custom
+        } else if let teamText = ReportBoilerplateDefaults.text(for: "purpose") {
+            purposeText = teamText
+        } else {
+            purposeText = purposeDefault
+        }
         currentYFromTop = drawWrappedText(purposeText, attributes: bodyAttributes, yFromTop: currentYFromTop, width: contentWidth)
         currentYFromTop += 20
         
         // OBSERVATIONS
         currentYFromTop = drawWrappedText("OBSERVATIONS:", attributes: headerAttributes, yFromTop: currentYFromTop, width: contentWidth)
         currentYFromTop += 8
-        let observationsText = "Observations are presented within this report. Property condition is described in photograph captions and elsewhere. Full-resolution images are retained electronically and can be provided upon request."
+        let observationsDefault = "Observations are presented within this report. Property condition is described in photograph captions and elsewhere. Full-resolution images are retained electronically and can be provided upon request."
+        let observationsText: String
+        if let custom = job.customObservationsText, !custom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            observationsText = custom
+        } else if let teamText = ReportBoilerplateDefaults.text(for: "observations") {
+            observationsText = teamText
+        } else {
+            observationsText = observationsDefault
+        }
         currentYFromTop = drawWrappedText(observationsText, attributes: bodyAttributes, yFromTop: currentYFromTop, width: contentWidth)
         currentYFromTop += 20
         
@@ -2181,13 +2892,17 @@ struct FieldResultsPackage {
             .font: footerFont,
             .foregroundColor: NSColor.gray
         ]
-        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
-        let address = "\(addressToUse), \(job.city ?? ""), \(job.state ?? "") \(job.zip ?? "")".uppercased()
         let footerY: CGFloat = 50
-        address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-        let pageText = "Page \(pageNumber) of \(totalPages)"
-        let pageTextSize = pageText.size(withAttributes: footerAttributes)
-        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        if job.includeAddressInReport ?? true {
+            let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+            let address = "\(addressToUse), \(job.city ?? ""), \(job.state ?? "") \(job.zip ?? "")".uppercased()
+            address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        }
+        if job.includePageNumbersInReport ?? true {
+            let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
+            let pageTextSize = pageText.size(withAttributes: footerAttributes)
+            pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        }
     }
     
     private func drawSummaryPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job, windows: [Window]) {
@@ -2350,13 +3065,17 @@ struct FieldResultsPackage {
             .font: footerFont,
             .foregroundColor: NSColor.gray
         ]
-        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
-        let address = "\(addressToUse), \(job.city ?? ""), \(job.state ?? "") \(job.zip ?? "")".uppercased()
         let footerY: CGFloat = 50
-        address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-        let pageText = "Page \(pageNumber) of \(totalPages)"
-        let pageTextSize = pageText.size(withAttributes: footerAttributes)
-        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        if job.includeAddressInReport ?? true {
+            let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+            let address = "\(addressToUse), \(job.city ?? ""), \(job.state ?? "") \(job.zip ?? "")".uppercased()
+            address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        }
+        if job.includePageNumbersInReport ?? true {
+            let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
+            let pageTextSize = pageText.size(withAttributes: footerAttributes)
+            pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        }
     }
     
     private func drawSummaryOfFindingsPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job, windows: [Window]) {
@@ -2374,14 +3093,18 @@ struct FieldResultsPackage {
         "SUMMARY OF FINDINGS".draw(in: titleRect, withAttributes: titleAttributes)
         currentYFromTop += titleHeight + 6
         
-        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
-        let addressString = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip)
-        let addressFont = NSFont.systemFont(ofSize: 12)
-        let addressAttributes: [NSAttributedString.Key: Any] = [.font: addressFont, .foregroundColor: NSColor.black]
-        let addressLineHeight = addressString.size(withAttributes: addressAttributes).height
-        let addressPdfY = pageRect.height - currentYFromTop - addressLineHeight
-        addressString.draw(at: CGPoint(x: 50, y: addressPdfY), withAttributes: addressAttributes)
-        currentYFromTop += addressLineHeight + 12
+        if job.includeAddressInReport ?? true {
+            let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+            let addressString = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip)
+            let addressFont = NSFont.systemFont(ofSize: 12)
+            let addressAttributes: [NSAttributedString.Key: Any] = [.font: addressFont, .foregroundColor: NSColor.black]
+            let addressLineHeight = addressString.size(withAttributes: addressAttributes).height
+            let addressPdfY = pageRect.height - currentYFromTop - addressLineHeight
+            addressString.draw(at: CGPoint(x: 50, y: addressPdfY), withAttributes: addressAttributes)
+            currentYFromTop += addressLineHeight + 12
+        } else {
+            currentYFromTop += 12
+        }
 
         let sectionHeadingFont = NSFont.boldSystemFont(ofSize: 12)
         let sectionHeadingAttributes: [NSAttributedString.Key: Any] = [
@@ -2407,15 +3130,31 @@ struct FieldResultsPackage {
         }
         
         drawLine("TEST PERFORMED", attrs: sectionHeadingAttributes, spacingAfter: 10)
-        drawBlock("The ASTM E1105 water test simulates rain conditions and was used to test if the windows are leaking.", attrs: bodyAttributes, spacingAfter: 12)
+        let testPerformedDefault = "The ASTM E1105 water test simulates rain conditions and was used to test if the windows are leaking."
+        let testPerformedText: String
+        if let custom = job.customTestPerformedText, !custom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            testPerformedText = custom
+        } else if let teamText = ReportBoilerplateDefaults.text(for: "test_performed") {
+            testPerformedText = teamText
+        } else {
+            testPerformedText = testPerformedDefault
+        }
+        drawBlock(testPerformedText, attrs: bodyAttributes, spacingAfter: 12)
         
         drawLine("BACKGROUND INFORMATION", attrs: [.font: NSFont.boldSystemFont(ofSize: 16), .foregroundColor: NSColor(red: 16/255.0, green: 50/255.0, blue: 93/255.0, alpha: 1.0)], spacingAfter: 12)
-        drawBlock("Cyclical Wind Pressures - Why Hurricanes can Cause Windows to Fail.", attrs: sectionHeadingAttributes, spacingAfter: 8)
-        drawBlock("Cyclical wind pressures in hurricanes can cause windows to fail even if they are structurally sound. Cyclical wind pressures in hurricanes can create significant stress on building components, leading to structural integrity issues over time.", attrs: bodyAttributes, spacingAfter: 8)
-        drawBlock("During a hurricane, wind changes speed and direction rapidly, creating cyclical pressures that alternate between positive and negative forces. This constant variation can weaken window components, damage seals, and create openings that allow water infiltration.", attrs: bodyAttributes, spacingAfter: 8)
-        let listItemAttributes: [NSAttributedString.Key: Any] = [.font: bodyFont, .foregroundColor: NSColor.black]
-        drawBlock("1. Positive Pressure: When wind strikes a building, it creates a positive pressure on the side facing the wind. This pressure attempts to push the building away from the wind.", attrs: listItemAttributes, spacingAfter: 6)
-        drawBlock("2. Negative Pressure (Suction): On the leeward side (the side away from the wind) and over the roof, negative pressures are created. These suction forces attempt to pull parts of the building away from the main structure.¹", attrs: listItemAttributes, spacingAfter: 4)
+        if let customBackground = job.customBackgroundInformationText, !customBackground.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let paragraphs = customBackground.components(separatedBy: "\n\n").flatMap { $0.components(separatedBy: "\n") }.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            for para in paragraphs {
+                drawBlock(para, attrs: bodyAttributes, spacingAfter: 8)
+            }
+        } else {
+            drawBlock("Cyclical Wind Pressures - Why Hurricanes can Cause Windows to Fail.", attrs: sectionHeadingAttributes, spacingAfter: 8)
+            drawBlock("Cyclical wind pressures in hurricanes can cause windows to fail even if they are structurally sound. Cyclical wind pressures in hurricanes can create significant stress on building components, leading to structural integrity issues over time.", attrs: bodyAttributes, spacingAfter: 8)
+            drawBlock("During a hurricane, wind changes speed and direction rapidly, creating cyclical pressures that alternate between positive and negative forces. This constant variation can weaken window components, damage seals, and create openings that allow water infiltration.", attrs: bodyAttributes, spacingAfter: 8)
+            let listItemAttributes: [NSAttributedString.Key: Any] = [.font: bodyFont, .foregroundColor: NSColor.black]
+            drawBlock("1. Positive Pressure: When wind strikes a building, it creates a positive pressure on the side facing the wind. This pressure attempts to push the building away from the wind.", attrs: listItemAttributes, spacingAfter: 6)
+            drawBlock("2. Negative Pressure (Suction): On the leeward side (the side away from the wind) and over the roof, negative pressures are created. These suction forces attempt to pull parts of the building away from the main structure.¹", attrs: listItemAttributes, spacingAfter: 4)
+        }
 
         drawLine("RECOMMENDATIONS & CONCLUSION", attrs: [.font: NSFont.boldSystemFont(ofSize: 24), .foregroundColor: NSColor(red: 39/255.0, green: 96/255.0, blue: 145/255.0, alpha: 1.0)], spacingAfter: 8)
         
@@ -2426,11 +3165,15 @@ struct FieldResultsPackage {
         let failedCount = failedWindows.count
         
         let recommendationsPara1: String
-        if failedCount > 0 {
+        if let customRec = job.customRecommendationsText, !customRec.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            recommendationsPara1 = customRec
+        } else if let teamText = ReportBoilerplateDefaults.text(for: "recommendations") {
+            recommendationsPara1 = teamText
+        } else if failedCount > 0 {
             recommendationsPara1 = "\(failedCount) of \(windowsTested) window specimen\(windowsTested == 1 ? "" : "s") tested failed the ASTM E1105 water test and require repair or replacement. Cyclical pressures from hurricanes can cause windows to fail by weakening glazing, damaging seals, and creating openings that lead to interior damage. For more details on hurricane damage to windows, see the section below called Common Terms."
         } else {
             recommendationsPara1 = "All tested windows passed the ASTM E1105 water test. However, cyclical pressures from hurricanes can still cause windows to fail by weakening glazing, damaging seals, and creating openings that lead to interior damage. For more details on hurricane damage to windows, see the section below called Common Terms."
-}
+        }
         drawBlock(recommendationsPara1, attrs: bodyAttributes, spacingAfter: 8)
 
         if job.entity.attributesByName["conclusionComment"] != nil,
@@ -2449,11 +3192,16 @@ struct FieldResultsPackage {
         let footerFont = NSFont.systemFont(ofSize: 10)
         let footerAttributes: [NSAttributedString.Key: Any] = [.font: footerFont, .foregroundColor: NSColor.gray]
         let footerY: CGFloat = 50
-        let footerAddress = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
-        footerAddress.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-        let pageText = "Page \(pageNumber) of \(totalPages)"
-        let pageTextSize = pageText.size(withAttributes: footerAttributes)
-        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        if job.includeAddressInReport ?? true {
+            let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+            let footerAddress = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+            footerAddress.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        }
+        if job.includePageNumbersInReport ?? true {
+            let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
+            let pageTextSize = pageText.size(withAttributes: footerAttributes)
+            pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        }
     }
     
     private func drawPhotoPage(context: CGContext, pageRect: CGRect, window: Window, photos: [FieldResultsPackage.PhotoData], pageNumber: Int, totalPages: Int, job: Job) {
@@ -2590,13 +3338,17 @@ struct FieldResultsPackage {
             .font: footerFont,
             .foregroundColor: NSColor.gray
         ]
-        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
-        let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
         let footerY: CGFloat = 50
-        address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-        let pageText = "Page \(pageNumber) of \(totalPages)"
-        let pageTextSize = pageText.size(withAttributes: footerAttributes)
-        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        if job.includeAddressInReport ?? true {
+            let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+            let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+            address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        }
+        if job.includePageNumbersInReport ?? true {
+            let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
+            let pageTextSize = pageText.size(withAttributes: footerAttributes)
+            pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        }
     }
     
     private func loadGaugeImage(from imagePath: String) -> NSImage? {
@@ -2640,6 +3392,60 @@ struct FieldResultsPackage {
         return nil
     }
     
+    /// Load calibration image from job's equipment_calibration folder (imported or saved per job). Returns nil if path missing or file not found.
+    private func loadEquipmentCalibrationImage(from imagePath: String) -> NSImage? {
+        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let imageURL = documentsDirectory.appendingPathComponent("equipment_calibration").appendingPathComponent(imagePath)
+        guard FileManager.default.fileExists(atPath: imageURL.path) else {
+            print("MYDEBUG → Equipment calibration image not found at: \(imageURL.path)")
+            return nil
+        }
+        guard
+            let data = try? Data(contentsOf: imageURL),
+            let image = NSImage(data: data),
+            image.size.width > 0,
+            image.size.height > 0
+        else {
+            print("MYDEBUG → Equipment calibration image unreadable at: \(imageURL.path)")
+            return nil
+        }
+        return image
+    }
+    
+    /// Prefer captured calibration path (main-thread safe) or job's path; otherwise fall back to bundle.
+    private func equipmentCalibrationImageForJob(_ job: Job) -> NSImage? {
+        let candidatePaths = [
+            equipmentCalibrationImage1Path,
+            equipmentCalibrationImage2Path,
+            job.equipmentCalibrationImage1Path,
+            job.equipmentCalibrationImage2Path
+        ]
+        for candidatePath in candidatePaths {
+            guard let path = candidatePath else { continue }
+            if let image = loadEquipmentCalibrationImage(from: path) {
+                return image
+            }
+        }
+        return loadEquipmentCalibrationImage()
+    }
+
+    /// Job-specific calibration photo only (no bundle fallback).
+    private func onsiteCalibrationImageForJob(_ job: Job) -> NSImage? {
+        let candidatePaths = [
+            equipmentCalibrationImage1Path,
+            equipmentCalibrationImage2Path,
+            job.equipmentCalibrationImage1Path,
+            job.equipmentCalibrationImage2Path
+        ]
+        for candidatePath in candidatePaths {
+            guard let path = candidatePath else { continue }
+            if let image = loadEquipmentCalibrationImage(from: path) {
+                return image
+            }
+        }
+        return nil
+    }
+    
     private func drawCalibrationPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
         let titleFont = NSFont.boldSystemFont(ofSize: 24)
         let titleAttributes: [NSAttributedString.Key: Any] = [
@@ -2653,128 +3459,67 @@ struct FieldResultsPackage {
         
         var contentFromTop: CGFloat = titleYFromTop + titleHeight + 40
         
-        let equipmentCalibrationImage1 = loadEquipmentCalibrationImage()
-        var gaugeImage: NSImage?
-        if let imagePath = job.gaugeImagePath {
-            gaugeImage = loadGaugeImage(from: imagePath)
-        }
-        var frontOfHomeImage: NSImage?
-        if let imagePath = job.frontOfHomeImagePath {
-            frontOfHomeImage = loadFrontOfHomeImage(from: imagePath)
-        }
+        let standardCalibrationImage = loadEquipmentCalibrationImage()
+        let onsiteCalibrationImage = onsiteCalibrationImageForJob(job)
+        print("MYDEBUG → Calibration candidates (captured1: \(equipmentCalibrationImage1Path ?? "nil"), captured2: \(equipmentCalibrationImage2Path ?? "nil"), job1: \(job.equipmentCalibrationImage1Path ?? "nil"), job2: \(job.equipmentCalibrationImage2Path ?? "nil")) standardLoaded=\(standardCalibrationImage != nil) onsiteLoaded=\(onsiteCalibrationImage != nil)")
         
-        let locationFont = NSFont.boldSystemFont(ofSize: 12)
-        let locationAttributes: [NSAttributedString.Key: Any] = [
-            .font: locationFont,
-            .foregroundColor: NSColor.black
-        ]
         let descriptionFont = NSFont.systemFont(ofSize: 11)
         let descriptionAttributes: [NSAttributedString.Key: Any] = [
             .font: descriptionFont,
             .foregroundColor: NSColor.black
         ]
         
-        // Top row: standard calibration letter (left), job calibration photo (right)
-        if equipmentCalibrationImage1 != nil {
+        // Top row: standard calibration letter (left), job onsite calibration photo (right).
+        if standardCalibrationImage != nil || onsiteCalibrationImage != nil {
+            enum CalibrationImageContentMode {
+                case fit
+                case fill
+            }
+
+            func drawFramedImage(_ image: NSImage, in frame: CGRect, contentMode: CalibrationImageContentMode = .fit) {
+                context.saveGState()
+                context.setFillColor(NSColor.white.cgColor)
+                context.fill(frame)
+                context.setStrokeColor(NSColor.lightGray.cgColor)
+                context.setLineWidth(1)
+                context.stroke(frame)
+                context.restoreGState()
+                let inset = frame.insetBy(dx: 4, dy: 4)
+                switch contentMode {
+                case .fit:
+                    drawNSImageAspectFit(image, in: inset, context: context)
+                case .fill:
+                    drawNSImageAspectFill(image, in: inset, context: context)
+                }
+            }
+
+            let maxImageHeight: CGFloat = 200
             let spacing: CGFloat = 20
             let totalWidth = pageRect.width - 100
+
             let imageWidth = (totalWidth - spacing) / 2
-            let maxImageHeight: CGFloat = 200
-            var maxHeight: CGFloat = 0
-            
-            if let image1 = equipmentCalibrationImage1 {
-                let imageAspectRatio = image1.size.width / image1.size.height
-                var imgWidth = imageWidth
-                var imgHeight = imgWidth / imageAspectRatio
-                if imgHeight > maxImageHeight {
-                    imgHeight = maxImageHeight
-                    imgWidth = imgHeight * imageAspectRatio
-                }
-                let imageX: CGFloat = 50
-                let imagePdfY = pageRect.height - contentFromTop - imgHeight
-                drawNSImage(image1, in: CGRect(x: imageX, y: imagePdfY, width: imgWidth, height: imgHeight), context: context)
-                maxHeight = max(maxHeight, imgHeight)
+            let leftFrame = CGRect(x: 50, y: pageRect.height - contentFromTop - maxImageHeight, width: imageWidth, height: maxImageHeight)
+            let rightFrame = CGRect(x: 50 + imageWidth + spacing, y: pageRect.height - contentFromTop - maxImageHeight, width: imageWidth, height: maxImageHeight)
+
+            if let standard = standardCalibrationImage {
+                drawFramedImage(standard, in: leftFrame, contentMode: .fit)
             }
-            
-            if let image2 = gaugeImage {
-                let imageAspectRatio = image2.size.width / image2.size.height
-                var imgWidth = imageWidth
-                var imgHeight = imgWidth / imageAspectRatio
-                if imgHeight > maxImageHeight {
-                    imgHeight = maxImageHeight
-                    imgWidth = imgHeight * imageAspectRatio
-                }
-                let allocatedX: CGFloat = 50 + imageWidth + spacing
-                let centerOffset = (imageWidth - imgWidth) / 2
-                let imageX = allocatedX + centerOffset
-                let imagePdfY = pageRect.height - contentFromTop - imgHeight
-                drawNSImage(image2, in: CGRect(x: imageX, y: imagePdfY, width: imgWidth, height: imgHeight), context: context)
-                maxHeight = max(maxHeight, imgHeight)
+            if let onsite = onsiteCalibrationImage {
+                drawFramedImage(onsite, in: rightFrame, contentMode: .fill)
             }
-            
-            contentFromTop += maxHeight + 15
-            
+            contentFromTop += maxImageHeight + 15
+
             let rightPadding: CGFloat = 36
             let leftText = "Calibrated equipment used for ASTM E1105 water testing."
             let leftTextRect = CGRect(x: 50, y: pageRect.height - contentFromTop - 40, width: imageWidth - rightPadding, height: 40)
             leftText.draw(in: leftTextRect, withAttributes: descriptionAttributes)
-            
-            if gaugeImage != nil {
+
+            if onsiteCalibrationImage != nil {
                 let rightText = "Verifying pressure of equipment before ASTM E1105 water test which simulates real rain conditions."
-                let rightTextX = 50 + imageWidth + spacing
-                let rightTextRect = CGRect(x: rightTextX, y: pageRect.height - contentFromTop - 40, width: imageWidth - rightPadding, height: 40)
+                let rightTextRect = CGRect(x: 50 + imageWidth + spacing, y: pageRect.height - contentFromTop - 40, width: imageWidth - rightPadding, height: 40)
                 rightText.draw(in: rightTextRect, withAttributes: descriptionAttributes)
             }
-            
             contentFromTop += 40 + 15
-            "Location: Onsite".draw(at: CGPoint(x: 50, y: pageRect.height - contentFromTop - locationFont.lineHeight), withAttributes: locationAttributes)
-            contentFromTop += locationFont.lineHeight + 20
-        } else if let image = gaugeImage {
-            // No bundle letter: show only gauge image (centered) then captions
-            let maxImageWidth: CGFloat = pageRect.width - 100
-            let maxImageHeight: CGFloat = 200
-            let imageAspectRatio = image.size.width / image.size.height
-            var imageWidth = min(maxImageWidth, image.size.width)
-            var imageHeight = imageWidth / imageAspectRatio
-            if imageHeight > maxImageHeight {
-                imageHeight = maxImageHeight
-                imageWidth = imageHeight * imageAspectRatio
-            }
-            let imageX = (pageRect.width - imageWidth) / 2
-            let imagePdfY = pageRect.height - contentFromTop - imageHeight
-            drawNSImage(image, in: CGRect(x: imageX, y: imagePdfY, width: imageWidth, height: imageHeight), context: context)
-            contentFromTop += imageHeight + 15
-            "Location: Onsite".draw(at: CGPoint(x: 50, y: pageRect.height - contentFromTop - locationFont.lineHeight), withAttributes: locationAttributes)
-            contentFromTop += locationFont.lineHeight + 20
-            let descriptionText = "Verifying pressure of equipment before ASTM E1105 water test which simulates real rain conditions."
-            let descriptionRect = CGRect(x: 50, y: pageRect.height - contentFromTop - 40, width: pageRect.width - 100, height: 40)
-            descriptionText.draw(in: descriptionRect, withAttributes: descriptionAttributes)
-            contentFromTop += 40 + 40
-        }
-        
-        // Front of property (bottom) — crop to center 50% height so text doesn't flow off page
-        if let image = frontOfHomeImage {
-            let imageToDraw = cropImageToCenterHalfHeight(image) ?? image
-            let maxImageWidth: CGFloat = pageRect.width - 100
-            let maxImageHeight: CGFloat = 200
-            let imageAspectRatio = imageToDraw.size.width / imageToDraw.size.height
-            var imageWidth = min(maxImageWidth, imageToDraw.size.width)
-            var imageHeight = imageWidth / imageAspectRatio
-            if imageHeight > maxImageHeight {
-                imageHeight = maxImageHeight
-                imageWidth = imageHeight * imageAspectRatio
-            }
-            let imageX = (pageRect.width - imageWidth) / 2
-            let imagePdfY = pageRect.height - contentFromTop - imageHeight
-            drawNSImage(imageToDraw, in: CGRect(x: imageX, y: imagePdfY, width: imageWidth, height: imageHeight), context: context)
-            contentFromTop += imageHeight + 15
-            
-            "Front of Property".draw(at: CGPoint(x: 50, y: pageRect.height - contentFromTop - locationFont.lineHeight), withAttributes: locationAttributes)
-            contentFromTop += locationFont.lineHeight
-            
-            let descriptionText = "Image of the front of the property for address verification."
-            let descriptionRect = CGRect(x: 50, y: pageRect.height - contentFromTop - 40, width: pageRect.width - 100, height: 40)
-            descriptionText.draw(in: descriptionRect, withAttributes: descriptionAttributes)
         }
         
         let footerFont = NSFont.systemFont(ofSize: 10)
@@ -2782,13 +3527,17 @@ struct FieldResultsPackage {
             .font: footerFont,
             .foregroundColor: NSColor.gray
         ]
-        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
-        let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
         let footerY: CGFloat = 50
-        address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-        let pageText = "Page \(pageNumber) of \(totalPages)"
-        let pageTextSize = pageText.size(withAttributes: footerAttributes)
-        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        if job.includeAddressInReport ?? true {
+            let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+            let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+            address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        }
+        if job.includePageNumbersInReport ?? true {
+            let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
+            let pageTextSize = pageText.size(withAttributes: footerAttributes)
+            pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        }
     }
     
     private func loadPartsOfWindowImage() -> NSImage? {
@@ -2836,13 +3585,17 @@ struct FieldResultsPackage {
         
         let footerFont = NSFont.systemFont(ofSize: 10)
         let footerAttributes: [NSAttributedString.Key: Any] = [.font: footerFont, .foregroundColor: NSColor.gray]
-        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
-        let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
         let footerY: CGFloat = 50
-        address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-        let pageText = "Page \(pageNumber) of \(totalPages)"
-        let pageTextSize = pageText.size(withAttributes: footerAttributes)
-        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        if job.includeAddressInReport ?? true {
+            let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+            let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+            address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        }
+        if job.includePageNumbersInReport ?? true {
+            let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
+            let pageTextSize = pageText.size(withAttributes: footerAttributes)
+            pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        }
     }
     
     private func drawCommonTermsWindowsPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
@@ -2903,13 +3656,17 @@ struct FieldResultsPackage {
         
         let footerFont = NSFont.systemFont(ofSize: 10)
         let footerAttributes: [NSAttributedString.Key: Any] = [.font: footerFont, .foregroundColor: NSColor.gray]
-        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
-        let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
         let footerY: CGFloat = 50
-        address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-        let pageText = "Page \(pageNumber) of \(totalPages)"
-        let pageTextSize = pageText.size(withAttributes: footerAttributes)
-        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        if job.includeAddressInReport ?? true {
+            let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+            let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+            address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        }
+        if job.includePageNumbersInReport ?? true {
+            let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
+            let pageTextSize = pageText.size(withAttributes: footerAttributes)
+            pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        }
     }
     
     private func drawWorksCitedPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
@@ -2972,15 +3729,17 @@ struct FieldResultsPackage {
             .font: footerFont,
             .foregroundColor: NSColor.gray
         ]
-        
-        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
-        let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
         let footerY: CGFloat = 50
-        address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-        
-        let pageText = "Page \(pageNumber) of \(totalPages)"
-        let pageTextSize = pageText.size(withAttributes: footerAttributes)
-        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        if job.includeAddressInReport ?? true {
+            let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+            let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+            address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        }
+        if job.includePageNumbersInReport ?? true {
+            let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
+            let pageTextSize = pageText.size(withAttributes: footerAttributes)
+            pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        }
     }
     
     private func drawCredentialsPage(context: CGContext, pageRect: CGRect, pageNumber: Int, totalPages: Int, job: Job) {
@@ -3057,15 +3816,17 @@ struct FieldResultsPackage {
             .font: footerFont,
             .foregroundColor: NSColor.gray
         ]
-        
-        let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
-        let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
         let footerY: CGFloat = 50
-        address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
-        
-        let pageText = "Page \(pageNumber) of \(totalPages)"
-        let pageTextSize = pageText.size(withAttributes: footerAttributes)
-        pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        if job.includeAddressInReport ?? true {
+            let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+            let address = formatAddressForExport(addressLine1: addressToUse, city: job.city, state: job.state, zip: job.zip).uppercased()
+            address.draw(at: CGPoint(x: 50, y: footerY), withAttributes: footerAttributes)
+        }
+        if job.includePageNumbersInReport ?? true {
+            let pageText = reportPageLabel(logicalPage: pageNumber, job: job)
+            let pageTextSize = pageText.size(withAttributes: footerAttributes)
+            pageText.draw(at: CGPoint(x: pageRect.width - 50 - pageTextSize.width, y: footerY), withAttributes: footerAttributes)
+        }
     }
     
     private func fetchPhotoImage(for photo: Photo) async -> NSImage? {
@@ -3266,6 +4027,8 @@ struct FieldResultsPackage {
             overviewInline: overviewInlineResource,
             overviewFull: overviewFullResource,
             overheadInline: overheadResource,
+            equipmentCalibrationImage1Path: equipmentCalibrationImage1Path,
+            equipmentCalibrationImage2Path: equipmentCalibrationImage2Path,
             windows: windowContents,
             actualWindows: sortedWindows
         )
@@ -3334,7 +4097,7 @@ struct FieldResultsPackage {
         }
         let inlineResource = DocxImageResource(data: dottedData, fileExtension: "png", cx: inlineWidthEMU, cy: inlineHeightEMU)
 
-        let fullWidthInches: CGFloat = 8.0
+        let fullWidthInches: CGFloat = 7.5
         let fullWidthEMU = Int(fullWidthInches * 914_400)
         var fullHeightEMU = Int(CGFloat(fullWidthEMU) * dottedAspectRatio)
         let fullMaxHeightEMU = Int(11.0 * 914_400)
@@ -3435,10 +4198,6 @@ struct FieldResultsPackage {
         let exteriorMaterial = window.material?.trimmedOrNil ?? "Unknown"
         lines.append(DocxSummaryLine(text: "Exterior Finishes: Glass, \(exteriorMaterial), Framed Windows", spacingBefore: 0, spacingAfter: tightSpacing))
         lines.append(DocxSummaryLine(text: "Interior Finishes: Drywall", spacingBefore: 0, spacingAfter: tightSpacing))
-        lines.append(DocxSummaryLine(text: "SF/CW Window Design Pressure: Unknown", spacingBefore: 0, spacingAfter: tightSpacing))
-        lines.append(DocxSummaryLine(text: "Building Pressure - Corner (PSF): Unknown", spacingBefore: 0, spacingAfter: tightSpacing))
-        lines.append(DocxSummaryLine(text: "Building Pressure - Field (PSF): Unknown", spacingBefore: 0, spacingAfter: tightSpacing))
-        lines.append(DocxSummaryLine(text: "Building Corner Distance (Feet): Unknown", spacingBefore: 0, spacingAfter: tightSpacing))
         lines.append(DocxSummaryLine(text: "Specimen Plumb, Level and Square: Yes, within industry standards", spacingBefore: 0, spacingAfter: 120))  // 6pt spacing after last row of Section C
         // Removed blank line after Section C
 
@@ -3770,6 +4529,12 @@ class FullJobPackageExporter {
                 fullPhotos.append(fullPhoto)
             }
             
+            let untestedReason: String? = {
+                if window.entity.attributesByName["untestedReason"] != nil {
+                    return window.value(forKey: "untestedReason") as? String
+                }
+                return nil
+            }()
             let fullWindow = FullJobPackage.FullWindowData(
                 windowId: windowId,
                 windowNumber: windowNumber,
@@ -3782,6 +4547,7 @@ class FullJobPackageExporter {
                 testResult: window.testResult,
                 leakPoints: window.leakPoints,
                 isInaccessible: window.isInaccessible,
+                untestedReason: untestedReason,
                 notes: window.notes,
                 testStartTime: window.testStartTime?.timeIntervalSince1970,
                 testStopTime: window.testStopTime?.timeIntervalSince1970,
@@ -3793,10 +4559,64 @@ class FullJobPackageExporter {
             fullWindows.append(fullWindow)
         }
         
+        // Specimen sections (roof, floors, etc.)
+        let sections = (job.specimenSections as? Set<SpecimenSection>) ?? []
+        let sectionsSorted = sections.sorted { a, b in
+            if a.displayOrder != b.displayOrder { return a.displayOrder < b.displayOrder }
+            return (a.sectionId ?? "") < (b.sectionId ?? "")
+        }
+        var fullSpecimenSections: [FullJobPackage.FullSpecimenSectionData] = []
+        for section in sectionsSorted {
+            let sectionPhotosSet = (section.sectionPhotos as? Set<SectionPhoto>) ?? []
+            let sectionPhotosArray = Array(sectionPhotosSet).sorted { ($0.createdAt ?? .distantPast) < ($1.createdAt ?? .distantPast) }
+            var fullSectionPhotos: [FullJobPackage.FullSectionPhotoData] = []
+            for (idx, sp) in sectionPhotosArray.enumerated() {
+                var imageData: Data?
+                if let path = sp.filePath, !path.isEmpty {
+                    let fullURL = documentsDirectory.appendingPathComponent(path)
+                    if FileManager.default.fileExists(atPath: fullURL.path) {
+                        imageData = try? Data(contentsOf: fullURL)
+                    }
+                }
+                guard let imageData = imageData else { continue }
+                let shortId = String((section.sectionId ?? UUID().uuidString).prefix(8))
+                let photoFileName = "section-\(shortId)-\(idx).jpg"
+                let photoURL = photosDir.appendingPathComponent(photoFileName)
+                try? imageData.write(to: photoURL)
+                fullSectionPhotos.append(FullJobPackage.FullSectionPhotoData(
+                    photoId: sp.photoId ?? UUID().uuidString,
+                    photoType: sp.photoType ?? "Section",
+                    imageFile: "photos/\(photoFileName)",
+                    notes: sp.notes,
+                    arrowXPosition: sp.arrowXPosition,
+                    arrowYPosition: sp.arrowYPosition,
+                    arrowDirection: sp.arrowDirection,
+                    rotationDegrees: sp.rotationDegrees,
+                    includeInReport: sp.includeInReport,
+                    createdAt: sp.createdAt?.timeIntervalSince1970
+                ))
+            }
+            fullSpecimenSections.append(FullJobPackage.FullSpecimenSectionData(
+                sectionId: section.sectionId ?? UUID().uuidString,
+                testingTypeId: section.testingTypeId ?? "",
+                sectionName: section.sectionName,
+                displayOrder: Int(section.displayOrder),
+                xPosition: section.xPosition,
+                yPosition: section.yPosition,
+                notes: section.notes,
+                result: section.result,
+                customFieldsJSON: section.customFieldsJSON,
+                createdAt: section.createdAt?.timeIntervalSince1970,
+                updatedAt: section.updatedAt?.timeIntervalSince1970,
+                sectionPhotos: fullSectionPhotos
+            ))
+        }
+        
         // Create full job data
         let fullJobData = FullJobPackage.FullJobData(
             jobId: job.jobId ?? UUID().uuidString,
             clientName: job.clientName,
+            tenantName: blankToNil(job.tenantName),
             addressLine1: job.addressLine1,
             cleanedAddressLine1: job.cleanedAddressLine1,
             city: job.city,
@@ -3837,8 +4657,24 @@ class FullJobPackageExporter {
             includeEngineeringLetter: includeEngineeringLetterOverride ?? job.includeEngineeringLetter,
             includeWeatherInReport: job.includeWeatherInReport ?? true,
             customWeatherText: job.customWeatherText,
+            namedStormWeatherSource: job.namedStormWeatherSource,
             customHurricaneImageFile: customHurricaneImageFile,
-            windows: fullWindows
+            customPurposeText: job.customPurposeText,
+            customObservationsText: job.customObservationsText,
+            customTestPerformedText: job.customTestPerformedText,
+            customBackgroundInformationText: job.customBackgroundInformationText,
+            customRecommendationsText: job.customRecommendationsText,
+            customEngineeringLetterParagraph2: job.customEngineeringLetterParagraph2,
+            includePageNumbersInReport: job.includePageNumbersInReport,
+            includeAddressInReport: job.includeAddressInReport,
+            reportStartingPageNumber: Int(job.reportStartingPageNumber),
+            enabledTestingTypeIds: job.enabledTestingTypeIds,
+            testingTypeNotes: job.testingTypeNotes,
+            testingTypeDisplayNamesByIdJSON: job.testingTypeDisplayNamesByIdJSON,
+            enabledGroupIds: job.enabledGroupIds,
+            photoNoteCategories: PhotoNoteCategoriesStore.shared.exportPayload(),
+            windows: fullWindows,
+            specimenSections: fullSpecimenSections.isEmpty ? nil : fullSpecimenSections
         )
         
         // Create package
@@ -3922,6 +4758,280 @@ class FullJobPackageExporter {
     }
 }
 
+// MARK: - Bulk Jobs Exporter (all jobs → master ZIP of full job packages)
+
+class BulkJobsExporter {
+    let jobs: [Job]
+    let documentsDirectory: URL
+    
+    var onProgress: ((Int, Int, String?) -> Void)?
+    
+    init(jobs: [Job]) {
+        self.jobs = jobs
+        self.documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+    }
+    
+    func exportAllJobs() async throws -> URL {
+        print("MYDEBUG →", "Starting bulk export for \(jobs.count) jobs")
+        
+        guard !jobs.isEmpty else {
+            throw NSError(domain: "ExportError", code: 1, userInfo: [NSLocalizedDescriptionKey: "No jobs to export"])
+        }
+        
+        let tempDirectory = documentsDirectory.appendingPathComponent("bulk_export_temp")
+        
+        if FileManager.default.fileExists(atPath: tempDirectory.path) {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        
+        for (index, job) in jobs.enumerated() {
+            let jobName = job.jobId ?? "Unknown"
+            print("MYDEBUG →", "Exporting job \(index + 1)/\(jobs.count): \(jobName)")
+            
+            onProgress?(index, jobs.count, jobName)
+            
+            do {
+                let exporter = FullJobPackageExporter(job: job)
+                let jobZipURL = try await exporter.export()
+                
+                let packageName = jobZipURL.deletingPathExtension().lastPathComponent
+                let jobSubdirectory = tempDirectory.appendingPathComponent(packageName)
+                
+                try FileManager.default.createDirectory(at: jobSubdirectory, withIntermediateDirectories: true)
+                try await extractZIP(jobZipURL, to: jobSubdirectory)
+                try? FileManager.default.removeItem(at: jobZipURL)
+                
+            } catch {
+                print("MYDEBUG →", "Failed to export job \(jobName): \(error.localizedDescription)")
+            }
+        }
+        
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
+        let timestamp = dateFormatter.string(from: Date())
+        let masterZipName = "AllJobsExport_\(timestamp).zip"
+        
+        let exportDirectory = documentsDirectory.appendingPathComponent("exports")
+        try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
+        
+        let masterZipURL = exportDirectory.appendingPathComponent(masterZipName)
+        try await createZIPArchive(from: tempDirectory, to: masterZipURL)
+        
+        print("MYDEBUG →", "Bulk export completed: \(masterZipURL.path)")
+        
+        return masterZipURL
+    }
+    
+    private func extractZIP(_ zipURL: URL, to destinationDir: URL) async throws {
+        guard let archive = Archive(url: zipURL, accessMode: .read) else {
+            throw NSError(domain: "ExportError", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to read ZIP archive"])
+        }
+        
+        let fileManager = FileManager.default
+        
+        for entry in archive {
+            if entry.type == .directory {
+                continue
+            }
+            
+            var entryPath = entry.path
+            if entryPath.hasPrefix("/") {
+                entryPath = String(entryPath.dropFirst())
+            }
+            
+            let destinationURL = destinationDir.appendingPathComponent(entryPath)
+            let parentDir = destinationURL.deletingLastPathComponent()
+            try fileManager.createDirectory(at: parentDir, withIntermediateDirectories: true)
+            _ = try archive.extract(entry, to: destinationURL)
+        }
+    }
+    
+    private func createZIPArchive(from sourceDir: URL, to destinationURL: URL) async throws {
+        let fileManager = FileManager.default
+        
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+        
+        guard let archive = Archive(url: destinationURL, accessMode: .create) else {
+            throw NSError(domain: "ExportError", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to create ZIP archive"])
+        }
+        
+        let enumerator = fileManager.enumerator(at: sourceDir, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
+        
+        while let fileURL = enumerator?.nextObject() as? URL {
+            if let resourceValues = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
+               resourceValues.isRegularFile == true {
+                
+                var relativePath = fileURL.path.replacingOccurrences(of: sourceDir.path + "/", with: "")
+                relativePath = relativePath.replacingOccurrences(of: "\\", with: "/")
+                
+                let fileData = try Data(contentsOf: fileURL)
+                
+                try archive.addEntry(with: relativePath, type: .file, uncompressedSize: UInt32(fileData.count), compressionMethod: .none) { position, size in
+                    return fileData.subdata(in: position..<position + size)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Specimen Package Exporter (add-on → main user, one or more specimens)
+
+class SpecimenPackageExporter {
+    let job: Job
+    let windows: [Window]
+    let documentsDirectory: URL
+    
+    init(job: Job, windows: [Window]) {
+        self.job = job
+        self.windows = windows
+        self.documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+    }
+    
+    func export() async throws -> URL {
+        let jobId = job.jobId ?? UUID().uuidString
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyyMMdd-HHmmss"
+        let timestamp = dateFormatter.string(from: Date())
+        let packageName = "specimen-\(jobId.prefix(8))-\(timestamp)"
+        
+        let exportDirectory = documentsDirectory.appendingPathComponent("exports")
+        try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
+        let packageDirectory = exportDirectory.appendingPathComponent(packageName)
+        try FileManager.default.createDirectory(at: packageDirectory, withIntermediateDirectories: true)
+        let photosDir = packageDirectory.appendingPathComponent("photos")
+        try FileManager.default.createDirectory(at: photosDir, withIntermediateDirectories: true)
+        
+        var fullSpecimens: [FullJobPackage.FullWindowData] = []
+        for (index, window) in windows.enumerated() {
+            let windowId = window.windowId ?? UUID().uuidString
+            let windowNumber = window.windowNumber ?? ""
+            let photos = (window.photos?.allObjects as? [Photo]) ?? []
+            var fullPhotos: [FullJobPackage.FullPhotoData] = []
+            
+            for (photoIndex, photo) in photos.enumerated() {
+                let photoType = photo.photoType ?? "Unknown"
+                let photoFileName = "\(windowId)-\(photoType)-\(photoIndex).jpg"
+                let photoURL = photosDir.appendingPathComponent(photoFileName)
+                
+                if photo.photoSource == "FileSystem", let filePath = photo.filePath {
+                    let fullPath = documentsDirectory.appendingPathComponent(filePath)
+                    if FileManager.default.fileExists(atPath: fullPath.path) {
+                        try? FileManager.default.copyItem(at: fullPath, to: photoURL)
+                    }
+                } else if let localIdentifier = photo.localIdentifier {
+                    let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
+                    if let asset = fetchResult.firstObject,
+                       let imageData = await fetchPhotoImageDataForSpecimen(asset: asset) {
+                        try? imageData.write(to: photoURL)
+                    }
+                }
+                
+                fullPhotos.append(FullJobPackage.FullPhotoData(
+                    photoId: photo.photoId ?? UUID().uuidString,
+                    photoType: photoType,
+                    imageFile: "photos/\(photoFileName)",
+                    notes: photo.notes,
+                    arrowXPosition: photo.arrowXPosition,
+                    arrowYPosition: photo.arrowYPosition,
+                    arrowDirection: photo.arrowDirection,
+                    rotationDegrees: photo.rotationDegrees,
+                    includeInReport: photo.includeInReport,
+                    createdAt: photo.createdAt?.timeIntervalSince1970
+                ))
+            }
+            
+            let untestedReason: String? = window.entity.attributesByName["untestedReason"] != nil ? (window.value(forKey: "untestedReason") as? String) : nil
+            fullSpecimens.append(FullJobPackage.FullWindowData(
+                windowId: windowId,
+                windowNumber: windowNumber,
+                xPosition: window.xPosition,
+                yPosition: window.yPosition,
+                width: window.width,
+                height: window.height,
+                windowType: window.windowType,
+                material: window.material,
+                testResult: window.testResult,
+                leakPoints: window.leakPoints,
+                isInaccessible: window.isInaccessible,
+                untestedReason: untestedReason,
+                notes: window.notes,
+                testStartTime: window.testStartTime?.timeIntervalSince1970,
+                testStopTime: window.testStopTime?.timeIntervalSince1970,
+                createdAt: window.createdAt?.timeIntervalSince1970,
+                updatedAt: window.updatedAt?.timeIntervalSince1970,
+                displayOrder: Int(window.displayOrder),
+                photos: fullPhotos
+            ))
+        }
+        
+        let package = SpecimenPackage(
+            version: "1.0",
+            jobId: jobId,
+            exportedAt: Date().timeIntervalSince1970,
+            exportedBy: job.inspectorName,
+            specimens: fullSpecimens
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        let jsonData = try encoder.encode(package)
+        let jsonURL = packageDirectory.appendingPathComponent("specimen-package.json")
+        try jsonData.write(to: jsonURL)
+        
+        let zipURL = exportDirectory.appendingPathComponent("\(packageName).zip")
+        try await createZIPArchiveForSpecimen(from: packageDirectory, to: zipURL)
+        print("MYDEBUG → SpecimenPackageExporter - Created \(zipURL.path)")
+        return zipURL
+    }
+    
+    private func fetchPhotoImageDataForSpecimen(asset: PHAsset) async -> Data? {
+        await withCheckedContinuation { continuation in
+            let options = PHImageRequestOptions()
+            options.isSynchronous = false
+            options.deliveryMode = .highQualityFormat
+            options.isNetworkAccessAllowed = true
+            PHImageManager.default().requestImage(for: asset, targetSize: PHImageManagerMaximumSize, contentMode: .aspectFit, options: options) { nsImage, _ in
+                if let nsImage = nsImage,
+                   let tiffData = nsImage.tiffRepresentation,
+                   let bitmapRep = NSBitmapImageRep(data: tiffData),
+                   let imageData = bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: 0.9]) {
+                    continuation.resume(returning: imageData)
+                } else {
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
+    }
+    
+    private func createZIPArchiveForSpecimen(from sourceDir: URL, to destinationURL: URL) async throws {
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+        guard let archive = Archive(url: destinationURL, accessMode: .create) else {
+            throw NSError(domain: "ExportError", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to create ZIP archive"])
+        }
+        let enumerator = fileManager.enumerator(at: sourceDir, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
+        while let fileURL = enumerator?.nextObject() as? URL {
+            if let resourceValues = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
+               resourceValues.isRegularFile == true {
+                var relativePath = fileURL.path.replacingOccurrences(of: sourceDir.path + "/", with: "")
+                relativePath = relativePath.replacingOccurrences(of: "\\", with: "/")
+                let fileData = try Data(contentsOf: fileURL)
+                try archive.addEntry(with: relativePath, type: .file, uncompressedSize: UInt32(fileData.count), compressionMethod: .none) { position, size in
+                    return fileData.subdata(in: position..<position + size)
+                }
+            }
+        }
+    }
+}
+
 // MARK: - DOCX Rendering Helpers
 
 fileprivate struct DocxImageResource {
@@ -3960,6 +5070,8 @@ fileprivate final class DocxTemplateRenderer {
         overviewInline: DocxImageResource?,
         overviewFull: DocxImageResource?,
         overheadInline: DocxImageResource?,
+        equipmentCalibrationImage1Path: String?,
+        equipmentCalibrationImage2Path: String?,
         windows: [DocxWindowContent],
         actualWindows: [Window]
     ) throws -> URL {
@@ -4123,7 +5235,7 @@ fileprivate final class DocxTemplateRenderer {
 
         print("📄 Adding OVERVIEW page...")
         // Add Overview page - should be page 2, right after cover
-        body += xmlOverviewTitle("OVERVIEW", spacingBefore: 446, spacingAfter: 0)
+        body += xmlOverviewTitle("OVERVIEW", spacingBefore: 160, spacingAfter: 0)
         
         // Add address below OVERVIEW title
         let addressToUseForTitle = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
@@ -4227,7 +5339,7 @@ fileprivate final class DocxTemplateRenderer {
 
         if let overviewFull,
            let fullRef = try? addImageResource(overviewFull, prefix: "locations") {
-            body += xmlLargeBoldParagraph("Specimen Locations", color: "276091", spacingBefore: 446)
+            body += xmlLargeBoldParagraph("Specimen Locations", color: "276091", spacingBefore: 160)
             body += xmlSpacerParagraph(before: 0, after: 120)  // Space after title
             body += generateSpecimenLocationsLegendXML()
             body += xmlSpacerParagraph(before: 0, after: 120)  // Space before image
@@ -4240,7 +5352,7 @@ fileprivate final class DocxTemplateRenderer {
         body += pageBreak()
 
         for (index, windowContent) in windows.enumerated() {
-            body += xmlLargeBoldParagraph(windowContent.title, color: "276091", spacingBefore: 446)
+            body += xmlLargeBoldParagraph(windowContent.title, color: "276091", spacingBefore: 160)
             
             // Add specimen information table - use actualWindows to get Window object with test times
             if index < actualWindows.count {
@@ -4271,7 +5383,7 @@ fileprivate final class DocxTemplateRenderer {
                 body += pageBreak()
                 // Add specimen title at top of first photo page
                 let specimenTitle = windowContent.title
-                body += xmlLargeBoldParagraph(specimenTitle, color: "276091", spacingBefore: 446, spacingAfter: 0)
+                body += xmlLargeBoldParagraph(specimenTitle, color: "276091", spacingBefore: 160, spacingAfter: 0)
                 
                 var photoIndex = 0
                 while photoIndex < windowContent.photos.count {
@@ -4295,12 +5407,16 @@ fileprivate final class DocxTemplateRenderer {
         
         // Add calibration section at the end: standard letter (left), job calibration photo (right), then front of home
         body += pageBreak()
-        body += xmlLargeBoldParagraph("CALIBRATED EQUIPMENT", color: "276091", spacingBefore: 446)
+        body += xmlLargeBoldParagraph("CALIBRATED EQUIPMENT", color: "276091", spacingBefore: 160)
         body += xmlSpacerParagraph(before: 240, after: 240)
         
         var calibrationEntries: [(relId: String, docPrId: Int, resource: DocxImageResource, caption: String)] = []
         
-        if let letterResource = loadEquipmentCalibrationResource(),
+        if let letterResource = loadEquipmentCalibrationResource(
+            job: job,
+            equipmentCalibrationImage1Path: equipmentCalibrationImage1Path,
+            equipmentCalibrationImage2Path: equipmentCalibrationImage2Path
+        ),
            let letterRef = try? addImageResource(letterResource, prefix: "calibrationLetter") {
             calibrationEntries.append((letterRef.relId, letterRef.docPrId, letterResource, "Calibrated equipment used for ASTM E1105 water testing."))
         }
@@ -4311,15 +5427,9 @@ fileprivate final class DocxTemplateRenderer {
             if FileManager.default.fileExists(atPath: imageURL.path),
                let gaugeImage = NSImage(contentsOfFile: imageURL.path),
                let gaugeData = gaugeImage.docxCompressedData(maxDimension: 1600, compressionQuality: 0.7) {
-                let widthInches: CGFloat = 3.5
-                let widthEMU = Int(widthInches * 914_400)
                 let aspectRatio = gaugeImage.size.width > 0 ? gaugeImage.size.height / gaugeImage.size.width : 1
-                var heightEMU = Int(CGFloat(widthEMU) * aspectRatio)
-                let maxHeightEMU = Int(4.0 * 914_400)
-                if heightEMU > maxHeightEMU {
-                    heightEMU = maxHeightEMU
-                }
-                let gaugeResource = DocxImageResource(data: gaugeData, fileExtension: "jpeg", cx: widthEMU, cy: heightEMU)
+                let gaugeExtent = fittedExtent(heightOverWidth: aspectRatio, maxWidthInches: 3.5, maxHeightInches: 4.0)
+                let gaugeResource = DocxImageResource(data: gaugeData, fileExtension: "jpeg", cx: gaugeExtent.cx, cy: gaugeExtent.cy)
                 if let gaugeRef = try? addImageResource(gaugeResource, prefix: "gauge") {
                     calibrationEntries.append((gaugeRef.relId, gaugeRef.docPrId, gaugeResource, "Verifying pressure of equipment before ASTM E1105 water test which simulates real rain conditions."))
                 }
@@ -4327,12 +5437,9 @@ fileprivate final class DocxTemplateRenderer {
         }
         
         if !calibrationEntries.isEmpty {
-            let columns = calibrationEntries.count
-            body += xmlSpacerParagraph(before: 120, after: 120, centered: true)
-            body += xmlPhotoTable(rows: 1, columns: columns, entries: calibrationEntries, centered: true)
-            body += xmlSpacerParagraph(before: 120, after: 120, centered: true)
+            body += xmlFloatingCalibrationRow(entries: calibrationEntries)
             body += xmlParagraph("Location: Onsite", style: "Normal")
-            body += xmlSpacerParagraph(before: 240, after: 240)
+            body += xmlSpacerParagraph(before: 0, after: 60)
         }
         
         // Load and add front of home image if available (cropped to center 50% height so text doesn't flow off page)
@@ -4343,22 +5450,13 @@ fileprivate final class DocxTemplateRenderer {
                let frontOfHomeImage = NSImage(contentsOfFile: imageURL.path) {
                 let imageForExport = cropImageToCenterHalfHeight(frontOfHomeImage) ?? frontOfHomeImage
                 if let frontOfHomeData = imageForExport.docxCompressedData(maxDimension: 1600, compressionQuality: 0.7) {
-                let widthInches: CGFloat = 3.5
-                let widthEMU = Int(widthInches * 914_400)
                 let aspectRatio = imageForExport.size.width > 0 ? imageForExport.size.height / imageForExport.size.width : 1
-                var heightEMU = Int(CGFloat(widthEMU) * aspectRatio)
-                let maxHeightEMU = Int(4.0 * 914_400)
-                if heightEMU > maxHeightEMU {
-                    heightEMU = maxHeightEMU
-                }
-                
-                let frontOfHomeResource = DocxImageResource(data: frontOfHomeData, fileExtension: "jpeg", cx: widthEMU, cy: heightEMU)
+                let frontExtent = fittedExtent(heightOverWidth: aspectRatio, maxWidthInches: 3.5, maxHeightInches: 4.0)
+                let frontOfHomeResource = DocxImageResource(data: frontOfHomeData, fileExtension: "jpeg", cx: frontExtent.cx, cy: frontExtent.cy)
                 if let frontOfHomeRef = try? addImageResource(frontOfHomeResource, prefix: "frontOfHome") {
-                    body += xmlSpacerParagraph(before: 120, after: 120, centered: true)
                     body += xmlImageParagraph(relId: frontOfHomeRef.relId, docPrId: frontOfHomeRef.docPrId, cx: frontOfHomeResource.cx, cy: frontOfHomeResource.cy, alignment: "center")
-                    body += xmlSpacerParagraph(before: 120, after: 120, centered: true)
-                    body += xmlParagraph("Front of Property", style: "Normal")
-                    body += xmlParagraph("Image of the front of the property for address verification.", style: "Normal")
+                    body += xmlParagraph("Front of Property", style: "Normal", spacingBefore: 40, spacingAfter: 0)
+                    body += xmlParagraph("Image of the front of the property for address verification.", style: "Normal", spacingBefore: 0, spacingAfter: 0)
                 }
                 }
             }
@@ -4428,7 +5526,7 @@ fileprivate final class DocxTemplateRenderer {
         }
         
         // Write document XML to file
-        let documentXML = wrapDocumentXML(body, footerRelId: footerRelId)
+        let documentXML = wrapDocumentXML(body, footerRelId: footerRelId, job: job)
         let documentPath = tempDir.appendingPathComponent("word/document.xml")
         guard let documentData = documentXML.data(using: .utf8) else {
             throw NSError(domain: "DocxError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to encode document XML"])
@@ -4571,47 +5669,27 @@ fileprivate final class DocxTemplateRenderer {
     }
     
     private func createFooterXML(job: Job) -> String {
+        let showAddress = job.includeAddressInReport ?? true
+        let showPageNumbers = job.includePageNumbersInReport ?? true
         let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
-        let addressString = addressToUse.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        
-        return """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-               xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-          <w:tbl>
-            <w:tblPr>
-              <w:tblW w:w="0" w:type="auto"/>
-              <w:tblBorders>
-                <w:top w:val="none" w:sz="0" w:space="0" w:color="auto"/>
-                <w:left w:val="none" w:sz="0" w:space="0" w:color="auto"/>
-                <w:bottom w:val="none" w:sz="0" w:space="0" w:color="auto"/>
-                <w:right w:val="none" w:sz="0" w:space="0" w:color="auto"/>
-                <w:insideH w:val="none" w:sz="0" w:space="0" w:color="auto"/>
-                <w:insideV w:val="none" w:sz="0" w:space="0" w:color="auto"/>
-              </w:tblBorders>
-            </w:tblPr>
-            <w:tr>
-              <w:tc>
-                <w:tcPr>
-                  <w:tcW w:w="0" w:type="auto"/>
-                </w:tcPr>
-                <w:p>
-                  <w:pPr>
-                    <w:jc w:val="left"/>
-                  </w:pPr>
+        let addressString = showAddress ? addressToUse.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() : ""
+        let includeAddress = showAddress && !addressString.isEmpty
+        // Content width at 0.5 in side margins on a letter page (12240 - 720 - 720).
+        let contentWidthTwips = 10800
+
+        var runs = ""
+        if includeAddress {
+            runs += """
                   <w:r>
                     <w:t xml:space="preserve">\(addressString.xmlEscaped)</w:t>
                   </w:r>
-                </w:p>
-              </w:tc>
-              <w:tc>
-                <w:tcPr>
-                  <w:tcW w:w="0" w:type="auto"/>
-                </w:tcPr>
-                <w:p>
-                  <w:pPr>
-                    <w:jc w:val="right"/>
-                  </w:pPr>
+            """
+        }
+        if showPageNumbers {
+            runs += """
+                  <w:r>
+                    <w:tab/>
+                  </w:r>
                   <w:r>
                     <w:t xml:space="preserve">Page </w:t>
                   </w:r>
@@ -4619,27 +5697,28 @@ fileprivate final class DocxTemplateRenderer {
                     <w:fldChar w:fldCharType="begin"/>
                   </w:r>
                   <w:r>
-                    <w:instrText xml:space="preserve"> Page </w:instrText>
+                    <w:instrText xml:space="preserve"> PAGE </w:instrText>
                   </w:r>
                   <w:r>
                     <w:fldChar w:fldCharType="end"/>
                   </w:r>
-                  <w:r>
-                    <w:t xml:space="preserve"> of </w:t>
-                  </w:r>
-                  <w:r>
-                    <w:fldChar w:fldCharType="begin"/>
-                  </w:r>
-                  <w:r>
-                    <w:instrText xml:space="preserve"> NUMPAGES </w:instrText>
-                  </w:r>
-                  <w:r>
-                    <w:fldChar w:fldCharType="end"/>
-                  </w:r>
-                </w:p>
-              </w:tc>
-            </w:tr>
-          </w:tbl>
+            """
+        }
+
+        return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+               xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+          <w:p>
+            <w:pPr>
+              <w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>
+              <w:jc w:val="left"/>
+              <w:tabs>
+                <w:tab w:val="right" w:pos="\(contentWidthTwips)"/>
+              </w:tabs>
+            </w:pPr>
+            \(runs)
+          </w:p>
         </w:ftr>
         """
     }
@@ -4752,21 +5831,46 @@ fileprivate final class DocxTemplateRenderer {
         return DocxImageResource(data: data, fileExtension: fileExtension, cx: stampSizeEMU, cy: stampSizeEMU)
     }
     
-    /// Standard calibration letter (ASTM certificate) for DOCX export.
-    private func loadEquipmentCalibrationResource() -> DocxImageResource? {
+    /// Standard calibration letter (ASTM certificate) for DOCX export. Prefers captured path (thread-safe) or job's calibration image when set.
+    private func loadEquipmentCalibrationResource(
+        job: Job?,
+        equipmentCalibrationImage1Path: String?,
+        equipmentCalibrationImage2Path: String?
+    ) -> DocxImageResource? {
         var imageData: Data?
         var image: NSImage?
         var fileExtension = "jpg"
         
-        if let path = Bundle.main.path(forResource: "EquipmentCalibrationRainMaker", ofType: "jpg", inDirectory: "images"),
+        let candidatePaths = [
+            equipmentCalibrationImage1Path,
+            equipmentCalibrationImage2Path,
+            job?.equipmentCalibrationImage1Path,
+            job?.equipmentCalibrationImage2Path
+        ]
+        for candidatePath in candidatePaths {
+            guard let path = candidatePath else { continue }
+            let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let imageURL = documentsDirectory.appendingPathComponent("equipment_calibration").appendingPathComponent(path)
+            if FileManager.default.fileExists(atPath: imageURL.path),
+               let data = try? Data(contentsOf: imageURL),
+               let img = NSImage(data: data), img.size.width > 0 {
+                imageData = data
+                image = img
+                break
+            }
+        }
+        
+        if imageData == nil, let path = Bundle.main.path(forResource: "EquipmentCalibrationRainMaker", ofType: "jpg", inDirectory: "images"),
            let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
             imageData = data
             image = NSImage(data: data)
-        } else if let path = Bundle.main.path(forResource: "EquipmentCalibrationRainMaker", ofType: "jpg"),
+        }
+        if imageData == nil, let path = Bundle.main.path(forResource: "EquipmentCalibrationRainMaker", ofType: "jpg"),
                   let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
             imageData = data
             image = NSImage(data: data)
-        } else if let img = NSImage(named: "EquipmentCalibrationRainMaker") ?? NSImage(named: "images/EquipmentCalibrationRainMaker"),
+        }
+        if imageData == nil, let img = NSImage(named: "EquipmentCalibrationRainMaker") ?? NSImage(named: "images/EquipmentCalibrationRainMaker"),
                   let tiffData = img.tiffRepresentation,
                   let bitmapRep = NSBitmapImageRep(data: tiffData),
                   let data = bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: 0.85]) {
@@ -4776,22 +5880,16 @@ fileprivate final class DocxTemplateRenderer {
         
         guard let data = imageData, let img = image, img.size.width > 0 else { return nil }
         
-        let widthInches: CGFloat = 3.5
-        let widthEMU = Int(widthInches * 914_400)
         let aspectRatio = img.size.height / img.size.width
-        var heightEMU = Int(CGFloat(widthEMU) * aspectRatio)
-        let maxHeightEMU = Int(4.0 * 914_400)
-        if heightEMU > maxHeightEMU {
-            heightEMU = maxHeightEMU
-        }
-        return DocxImageResource(data: data, fileExtension: fileExtension, cx: widthEMU, cy: heightEMU)
+        let extent = fittedExtent(heightOverWidth: aspectRatio, maxWidthInches: 3.5, maxHeightInches: 4.0)
+        return DocxImageResource(data: data, fileExtension: fileExtension, cx: extent.cx, cy: extent.cy)
     }
     
     private func generateEngineeringLetterXML(job: Job, engineerStampRef: (relId: String, docPrId: Int)?) -> String {
         var xml = ""
         
         // Title - "ENGINEERING LETTER" in blue, bold
-        xml += xmlLargeBoldParagraph("ENGINEERING LETTER", color: "276091", spacingBefore: 446)
+        xml += xmlLargeBoldParagraph("ENGINEERING LETTER", color: "276091", spacingBefore: 160)
         xml += xmlSpacerParagraph(before: 0, after: 120)
         
         // Date
@@ -4822,14 +5920,14 @@ fileprivate final class DocxTemplateRenderer {
         xml += xmlEngineeringLetterParagraph("Harrison, OH 45030", spacingBefore: 0, spacingAfter: 120)
         
         // Salutation
-        let firstName = clientName.components(separatedBy: " ").first ?? clientName
-        xml += xmlEngineeringLetterParagraph("Greetings \(firstName),", spacingBefore: 80, spacingAfter: 120)
+        let salutation = engineeringLetterSalutation(ownerName: clientName, tenantName: job.tenantName)
+        xml += xmlEngineeringLetterParagraph(salutation, spacingBefore: 80, spacingAfter: 120)
         
         // Body paragraphs
         let paragraph1 = "True Reports Inc., in collaboration with my individual firm, has conducted an evaluation of the condition of the windows at the property located at \(addressToUse.isEmpty ? "the property" : addressToUse), as detailed in the attached report. The opinions presented in this report have been formulated within a reasonable degree of professional certainty. These opinions are based on a review of the available information, associated research, as well as our knowledge, training and experience. True Reports Inc. reserves the right to update this report should additional information become available. The True Reports Inc's investigation of the property at \(addressToUse.isEmpty ? "the property" : addressToUse) was performed by the True Reports Inc. Field Inspection Team under my direct supervision."
         xml += xmlEngineeringLetterParagraph(paragraph1, spacingBefore: 0, spacingAfter: 60)
         
-        let paragraph2 = "It is my professional opinion that the property sustained damage to the windows of the building during Hurricane Milton. Windows will need to be repaired or replaced. All repairs must be in compliance with the Florida Building Code: Existing Building 2023."
+        let paragraph2 = engineeringLetterParagraph2(for: job)
         xml += xmlEngineeringLetterParagraph(paragraph2, spacingBefore: 0, spacingAfter: 60)
         
         let paragraph3 = "True Reports Inc. appreciates the opportunity to assist with this inspection. Please call if you have any questions."
@@ -4838,7 +5936,15 @@ fileprivate final class DocxTemplateRenderer {
         // Closing
         xml += xmlEngineeringLetterParagraph("Respectfully Submitted,", spacingBefore: 0, spacingAfter: 120)
         
-        // Signatory information - create a table with two columns: left for names, right for seal
+        // Signatory information - names on the left, inline seal on the right so the disclaimer cannot wrap around it
+        let stampEMU = Int(2.35 * 914_400)
+        let stampParagraph: String
+        if let stampRef = engineerStampRef {
+            stampParagraph = xmlInlineImageParagraph(relId: stampRef.relId, docPrId: stampRef.docPrId, cx: stampEMU, cy: stampEMU, alignment: "right")
+            print("MYDEBUG →", "engineering letter inline stamp \(stampEMU)")
+        } else {
+            stampParagraph = "<w:p/>"
+        }
         xml += """
         <w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
           <w:tblPr>
@@ -4854,6 +5960,7 @@ fileprivate final class DocxTemplateRenderer {
             <w:tc>
               <w:tcPr>
                 <w:tcW w:w="5400" w:type="dxa"/>
+                <w:vAlign w:val="top"/>
               </w:tcPr>
               <w:p>
                 <w:r>
@@ -4873,23 +5980,15 @@ fileprivate final class DocxTemplateRenderer {
                 <w:tcW w:w="5400" w:type="dxa"/>
                 <w:vAlign w:val="top"/>
               </w:tcPr>
-              <w:p/>
+              \(stampParagraph)
             </w:tc>
           </w:tr>
         </w:tbl>
         """
         
-        // Add 8 blank lines after the table
-        xml += xmlSpacerParagraph(before: 1920, after: 0)  // 8 blank lines (8 * 240 twips)
-        
-        // Add engineer stamp image if available - right-aligned above disclaimer
-        if let stampRef = engineerStampRef {
-            xml += xmlAnchoredImageParagraph(relId: stampRef.relId, docPrId: stampRef.docPrId, cx: Int(2.35 * 914_400), cy: Int(2.35 * 914_400), alignment: "right")
-        }
-        
-        // Digital signature disclaimer
+        // Digital signature disclaimer sits full width under the seal
         let disclaimerText = "Kyle Renevier, State of Florida, Professional Engineer, License No. 98372. This item has been digitally signed and sealed by Kyle Renevier on the date indicated here. Printed copies of this document are not considered signed and sealed and the signature must be verified on any electronic copies."
-        xml += xmlEngineeringLetterParagraph(disclaimerText, spacingBefore: 240, spacingAfter: 0)  // Couple blank lines before disclaimer
+        xml += xmlEngineeringLetterParagraph(disclaimerText, spacingBefore: 120, spacingAfter: 0)
         
         return xml
     }
@@ -4902,7 +6001,7 @@ fileprivate final class DocxTemplateRenderer {
         timeFormatter.dateStyle = .none
         
         // Title - blue color
-        var xml = xmlLargeBoldParagraph("Window Testing Summary", color: "276091", spacingBefore: 446)
+        var xml = xmlLargeBoldParagraph("Window Testing Summary", color: "276091", spacingBefore: 160)
         xml += xmlSpacerParagraph(before: 0, after: 240)
         
         // Box with blue header bar - create a table for the box structure
@@ -4931,32 +6030,33 @@ fileprivate final class DocxTemplateRenderer {
         </w:tr>
         """
         
-        // Address row
-        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
-        var addressComponents: [String] = []
-        if !addressToUse.isEmpty {
-            addressComponents.append(addressToUse)
-        }
-        if let city = job.city, !city.isEmpty {
-            addressComponents.append(city)
-        }
-        // Combine state and zip without comma between them
-        var stateZip = ""
-        if let state = job.state, !state.isEmpty {
-            stateZip = state
-        }
-        if let zip = job.zip, !zip.isEmpty {
-            if !stateZip.isEmpty {
-                stateZip += " \(zip)"
-            } else {
-                stateZip = zip
+        // Address row (optional)
+        var addressRow = ""
+        if job.includeAddressInReport ?? true {
+            let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+            var addressComponents: [String] = []
+            if !addressToUse.isEmpty {
+                addressComponents.append(addressToUse)
             }
-        }
-        if !stateZip.isEmpty {
-            addressComponents.append(stateZip)
-        }
-        let addressString = addressComponents.joined(separator: ", ")
-        let addressRow = """
+            if let city = job.city, !city.isEmpty {
+                addressComponents.append(city)
+            }
+            var stateZip = ""
+            if let state = job.state, !state.isEmpty {
+                stateZip = state
+            }
+            if let zip = job.zip, !zip.isEmpty {
+                if !stateZip.isEmpty {
+                    stateZip += " \(zip)"
+                } else {
+                    stateZip = zip
+                }
+            }
+            if !stateZip.isEmpty {
+                addressComponents.append(stateZip)
+            }
+            let addressString = addressComponents.joined(separator: ", ")
+            addressRow = """
         <w:tr>
           <w:tc>
             <w:tcPr>
@@ -4976,6 +6076,7 @@ fileprivate final class DocxTemplateRenderer {
           </w:tc>
         </w:tr>
         """
+        }
         
         // Summary table with header and data rows
         let colWidths: [Int] = [1800, 1200, 2700, 2700] // Results, Window, Time: Start, Time: Stop
@@ -5215,48 +6316,67 @@ fileprivate final class DocxTemplateRenderer {
         let failedCount = failedWindows.count
         
         // Title - blue color
-        var xml = xmlLargeBoldParagraph("SUMMARY OF FINDINGS", color: "276091", spacingBefore: 446)
+        var xml = xmlLargeBoldParagraph("SUMMARY OF FINDINGS", color: "276091", spacingBefore: 160)
         xml += xmlSpacerParagraph(before: 0, after: 120)
         
-        // Address
-        let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
-        var addressComponents: [String] = []
-        if !addressToUse.isEmpty {
-            addressComponents.append(addressToUse)
+        // Address (optional)
+        if job.includeAddressInReport ?? true {
+            let addressToUse = job.cleanedAddressLine1 ?? job.addressLine1 ?? ""
+            var addressComponents: [String] = []
+            if !addressToUse.isEmpty {
+                addressComponents.append(addressToUse)
+            }
+            if let city = job.city, !city.isEmpty {
+                addressComponents.append(city)
+            }
+            if let state = job.state, !state.isEmpty {
+                addressComponents.append(state)
+            }
+            if let zip = job.zip, !zip.isEmpty {
+                addressComponents.append(zip)
+            }
+            let addressString = addressComponents.joined(separator: ", ")
+            xml += xmlParagraph(addressString, spacingBefore: 0, spacingAfter: 240)
         }
-        if let city = job.city, !city.isEmpty {
-            addressComponents.append(city)
-        }
-        if let state = job.state, !state.isEmpty {
-            addressComponents.append(state)
-        }
-        if let zip = job.zip, !zip.isEmpty {
-            addressComponents.append(zip)
-        }
-        let addressString = addressComponents.joined(separator: ", ")
-        xml += xmlParagraph(addressString, spacingBefore: 0, spacingAfter: 240)
         
         // TEST PERFORMED Section
         xml += xmlBoldParagraph("TEST PERFORMED", color: "10325d", spacingBefore: 0, spacingAfter: 120)
-        xml += xmlParagraph("The ASTM E1105 water test simulates rain conditions and was used to test if the windows are leaking.", spacingBefore: 0, spacingAfter: 240)
+        let testPerformedDefault = "The ASTM E1105 water test simulates rain conditions and was used to test if the windows are leaking."
+        let testPerformedText: String
+        if let custom = job.customTestPerformedText, !custom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            testPerformedText = custom
+        } else if let teamText = ReportBoilerplateDefaults.text(for: "test_performed") {
+            testPerformedText = teamText
+        } else {
+            testPerformedText = testPerformedDefault
+        }
+        xml += xmlParagraph(testPerformedText, spacingBefore: 0, spacingAfter: 240)
         
         // BACKGROUND INFORMATION Section
         xml += xmlBoldParagraph("BACKGROUND INFORMATION", color: "10325d", spacingBefore: 0, spacingAfter: 120)
         
-        // Sub-heading
-        xml += xmlBoldParagraph("Cyclical Wind Pressures - Why Hurricanes can Cause Windows to Fail.", spacingBefore: 0, spacingAfter: 120)
-        
-        // Background information paragraphs
-        xml += xmlParagraph("Cyclical wind pressures in hurricanes can cause windows to fail even if they are structurally sound. According to FEMA Fact Sheet 1.3, these pressures can create significant stress on building components, leading to structural integrity issues over time.", spacingBefore: 0, spacingAfter: 120)
-        // First paragraph as quote, numbered items without quotes
-        let firstQuote = "\"During a hurricane, wind changes speed and direction rapidly, creating cyclical pressures that alternate between positive and negative forces. This constant variation can weaken window components, damage seals, and create openings that allow water infiltration."
-        xml += xmlParagraph(firstQuote, spacingBefore: 0, spacingAfter: 120)
-        
-        // Numbered list without quotes
-        xml += xmlParagraph("1. Positive Pressure: When wind strikes a building, it creates a positive pressure on the side facing the wind. This pressure attempts to push the building away from the wind.", spacingBefore: 0, spacingAfter: 120)
-        xml += xmlParagraph("2. Negative Pressure (Suction): On the leeward side (the side away from the wind) and over the roof, negative pressures are created. These suction forces attempt to pull parts of the building away from the main structure.\"¹", spacingBefore: 0, spacingAfter: 240)
-        // Add blank line after
-        xml += xmlSpacerParagraph(before: 0, after: 0)
+        if let customBackground = job.customBackgroundInformationText, !customBackground.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let paragraphs = customBackground.components(separatedBy: "\n\n").flatMap { $0.components(separatedBy: "\n") }.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            for para in paragraphs {
+                xml += xmlParagraph(para, spacingBefore: 0, spacingAfter: 120)
+            }
+            xml += xmlSpacerParagraph(before: 0, after: 0)
+        } else {
+            // Sub-heading
+            xml += xmlBoldParagraph("Cyclical Wind Pressures - Why Hurricanes can Cause Windows to Fail.", spacingBefore: 0, spacingAfter: 120)
+            
+            // Background information paragraphs
+            xml += xmlParagraph("Cyclical wind pressures in hurricanes can cause windows to fail even if they are structurally sound. According to FEMA Fact Sheet 1.3, these pressures can create significant stress on building components, leading to structural integrity issues over time.", spacingBefore: 0, spacingAfter: 120)
+            // First paragraph as quote, numbered items without quotes
+            let firstQuote = "\"During a hurricane, wind changes speed and direction rapidly, creating cyclical pressures that alternate between positive and negative forces. This constant variation can weaken window components, damage seals, and create openings that allow water infiltration."
+            xml += xmlParagraph(firstQuote, spacingBefore: 0, spacingAfter: 120)
+            
+            // Numbered list without quotes
+            xml += xmlParagraph("1. Positive Pressure: When wind strikes a building, it creates a positive pressure on the side facing the wind. This pressure attempts to push the building away from the wind.", spacingBefore: 0, spacingAfter: 120)
+            xml += xmlParagraph("2. Negative Pressure (Suction): On the leeward side (the side away from the wind) and over the roof, negative pressures are created. These suction forces attempt to pull parts of the building away from the main structure.\"¹", spacingBefore: 0, spacingAfter: 240)
+            // Add blank line after
+            xml += xmlSpacerParagraph(before: 0, after: 0)
+        }
         
         // RECOMMENDATIONS & CONCLUSION Section - Bold, size 24, blue
         var recPPr = "<w:spacing w:after=\"120\"/>"
@@ -5273,7 +6393,11 @@ fileprivate final class DocxTemplateRenderer {
         
         // Recommendations paragraph 1
         let recommendationsPara1: String
-        if failedCount > 0 {
+        if let customRec = job.customRecommendationsText, !customRec.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            recommendationsPara1 = customRec
+        } else if let teamText = ReportBoilerplateDefaults.text(for: "recommendations") {
+            recommendationsPara1 = teamText
+        } else if failedCount > 0 {
             recommendationsPara1 = "\(failedCount) of \(totalTestedWindows) window\(totalTestedWindows == 1 ? "" : "s") failed the ASTM E1105 water test and require repair or replacement. Cyclical pressures from hurricanes can cause windows to fail by weakening glazing, damaging seals, and creating openings that lead to interior damage. For more details on hurricane damage to windows, see the section below called Common Terms."
         } else {
             recommendationsPara1 = "All tested windows passed the ASTM E1105 water test. However, cyclical pressures from hurricanes can still cause windows to fail by weakening glazing, damaging seals, and creating openings that lead to interior damage. For more details on hurricane damage to windows, see the section below called Common Terms."
@@ -5299,12 +6423,28 @@ fileprivate final class DocxTemplateRenderer {
         
         // PURPOSE Section
         xml += xmlBoldParagraph("PURPOSE:", color: "5BA3D6", spacingBefore: 0, spacingAfter: 0)
-        let purposeText = "True Reports was hired by the insured to inspect the property for a damage claim. The date of loss (DOL) is indicated as October 9, 2024. The goal of this inspection was to provide a professional opinion on the cause, origin, extent, and repairability of reported and observed window damage."
+        let purposeDefault = "True Reports was hired by the insured to inspect the property for a damage claim. The date of loss (DOL) is indicated as October 9, 2024. The goal of this inspection was to provide a professional opinion on the cause, origin, extent, and repairability of reported and observed window damage."
+        let purposeText: String
+        if let custom = job.customPurposeText, !custom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            purposeText = custom
+        } else if let teamText = ReportBoilerplateDefaults.text(for: "purpose") {
+            purposeText = teamText
+        } else {
+            purposeText = purposeDefault
+        }
         xml += xmlParagraph(purposeText, spacingBefore: 0, spacingAfter: 240)
         
         // OBSERVATIONS Section
         xml += xmlBoldParagraph("OBSERVATIONS:", color: "5BA3D6", spacingBefore: 0, spacingAfter: 0)
-        let observationsText = "Observations are presented within this report. Property condition is described in photograph captions and elsewhere. Full-resolution images are retained electronically and can be provided upon request."
+        let observationsDefault = "Observations are presented within this report. Property condition is described in photograph captions and elsewhere. Full-resolution images are retained electronically and can be provided upon request."
+        let observationsText: String
+        if let custom = job.customObservationsText, !custom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            observationsText = custom
+        } else if let teamText = ReportBoilerplateDefaults.text(for: "observations") {
+            observationsText = teamText
+        } else {
+            observationsText = observationsDefault
+        }
         xml += xmlParagraph(observationsText, spacingBefore: 0, spacingAfter: 240)
         
         // WEATHER HISTORY Section (only when weather is included in report)
@@ -5339,7 +6479,7 @@ fileprivate final class DocxTemplateRenderer {
           <w:pPr>
             <w:sectPr>
               <w:pgSz w:w="12240" w:h="15840"/>
-              <w:pgMar w:top="1166" w:right="1440" w:bottom="720" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
+              <w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="288" w:footer="288" w:gutter="0"/>
               <w:cols w:space="720"/>
             </w:sectPr>
           </w:pPr>
@@ -5353,7 +6493,7 @@ fileprivate final class DocxTemplateRenderer {
         var xml = ""
         
         // Title "SOURCES" - bold, blue, 24pt
-        xml += xmlBoldParagraph("SOURCES", color: "276091", fontSize: 24, spacingBefore: 446, spacingAfter: 240)
+        xml += xmlBoldParagraph("SOURCES", color: "276091", fontSize: 24, spacingBefore: 160, spacingAfter: 240)
         
         // First citation (FEMA) - no indent, left aligned
         let citation1 = "1 Federal Emergency Management Agency. \"Cyclical Wind Pressures in Hurricanes.\" Home Builder's Guide to Coastal Construction Technical Fact Sheet Series, no. 1.3, Dec. 2018, www.fema.gov/sites/default/files/2020-07/fema_p499_fact_sheet_1-3_cyclical_wind_pressures.pdf."
@@ -5374,7 +6514,7 @@ fileprivate final class DocxTemplateRenderer {
         var xml = ""
         
         // Title "COMMON TERMS - WINDOWS CYCLICAL PRESSURES"
-        xml += xmlLargeBoldParagraph("COMMON TERMS - WINDOWS CYCLICAL PRESSURES", color: "276091", spacingBefore: 446, spacingAfter: 240)
+        xml += xmlLargeBoldParagraph("COMMON TERMS - WINDOWS CYCLICAL PRESSURES", color: "276091", spacingBefore: 160, spacingAfter: 240)
         
         // Terms list
         let terms: [(term: String, definition: String)] = [
@@ -5538,7 +6678,7 @@ fileprivate final class DocxTemplateRenderer {
         var xml = ""
         
         // Title "CREDENTIALS"
-        xml += xmlBoldParagraph("CREDENTIALS", color: "276091", fontSize: 24, spacingBefore: 446, spacingAfter: 120)
+        xml += xmlBoldParagraph("CREDENTIALS", color: "276091", fontSize: 24, spacingBefore: 160, spacingAfter: 120)
         
         // K. Renevier, P.E.
         xml += xmlBoldParagraph("K. Renevier, P.E.", fontSize: 11, spacingBefore: 0, spacingAfter: 40)
@@ -5628,10 +6768,41 @@ fileprivate final class DocxTemplateRenderer {
         }
     }
 
-    private func wrapDocumentXML(_ body: String, footerRelId: String? = nil) -> String {
+    private func lastRealParagraphStart(in body: String, before end: String.Index) -> String.Index? {
+        var searchEnd = end
+        while searchEnd > body.startIndex,
+              let range = body.range(of: "<w:p", options: .backwards, range: body.startIndex..<searchEnd) {
+            if range.upperBound < body.endIndex {
+                let next = body[range.upperBound]
+                if next == ">" || next == " " || next == "\n" || next == "\r" || next == "\t" {
+                    return range.lowerBound
+                }
+            }
+            searchEnd = range.lowerBound
+        }
+        return nil
+    }
+
+    private func realParagraphTagCount(in xml: String) -> Int {
+        var count = 0
+        var searchStart = xml.startIndex
+        while let range = xml.range(of: "<w:p", range: searchStart..<xml.endIndex) {
+            if range.upperBound < xml.endIndex {
+                let next = xml[range.upperBound]
+                if next == ">" || next == " " || next == "\n" || next == "\r" || next == "\t" {
+                    count += 1
+                }
+            }
+            searchStart = range.upperBound
+        }
+        return count
+    }
+
+    private func wrapDocumentXML(_ body: String, footerRelId: String? = nil, job: Job) -> String {
+        let startPage = reportStartingPageNumber(for: job)
         var sectPr = """
             <w:pgSz w:w="12240" w:h="15840"/>
-            <w:pgMar w:top="1166" w:right="1440" w:bottom="720" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
+            <w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="288" w:footer="288" w:gutter="0"/>
             <w:cols w:space="720"/>
         """
         if let footerRelId {
@@ -5648,11 +6819,11 @@ fileprivate final class DocxTemplateRenderer {
         if let lastParaEndRange = modifiedBody.range(of: "</w:p>", options: .backwards) {
             // Find the start of the last paragraph - use simple backwards search
             // This finds the last <w:p before the last </w:p>
-            guard let lastParaStart = modifiedBody.range(of: "<w:p", options: .backwards, range: modifiedBody.startIndex..<lastParaEndRange.lowerBound)?.lowerBound else {
+            guard let lastParaStart = lastRealParagraphStart(in: modifiedBody, before: lastParaEndRange.lowerBound) else {
                 // Can't find paragraph start, just add pPr before closing tag
                 let insertIndex = modifiedBody.index(lastParaEndRange.lowerBound, offsetBy: 0)
                 modifiedBody.insert(contentsOf: "<w:pPr><w:sectPr>\(sectPr)</w:sectPr></w:pPr>", at: insertIndex)
-                return """
+                return documentXMLWithStartingPageNumber("""
                 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
                 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
                             xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -5663,16 +6834,21 @@ fileprivate final class DocxTemplateRenderer {
                     \(modifiedBody)
                   </w:body>
                 </w:document>
-                """
+                """, startPage: startPage)
             }
             
+            let lastParagraphSlice = String(modifiedBody[lastParaStart..<lastParaEndRange.upperBound])
+            if lastParagraphSlice.contains("w:drawing") || lastParagraphSlice.contains("w:txbx") {
+                print("MYDEBUG →", "sectPr appended after anchored paragraph")
+                modifiedBody += "<w:p><w:pPr><w:sectPr>\(sectPr)</w:sectPr></w:pPr></w:p>"
+            } else {
             // Extract everything between <w:p> and </w:p> (the inner content)
             let paraTagEnd = modifiedBody.range(of: ">", range: lastParaStart..<lastParaEndRange.lowerBound)?.upperBound ?? modifiedBody.index(lastParaStart, offsetBy: 4)
             var paraInnerContent = String(modifiedBody[paraTagEnd..<lastParaEndRange.lowerBound])
             
             // DEBUG: Check for nested paragraphs before processing
-            let hasNestedPara = paraInnerContent.contains("<w:p")
-            if hasNestedPara {
+            let nestedParagraphCount = realParagraphTagCount(in: paraInnerContent)
+            if nestedParagraphCount > 0 {
                 print("⚠️ WARNING: Last paragraph contains nested <w:p> tag!")
             }
             
@@ -5742,8 +6918,9 @@ fileprivate final class DocxTemplateRenderer {
             // Rebuild the paragraph: content first, then single pPr with sectPr at end
             let newLastPara = "<w:p>\(paraInnerContent)<w:pPr>\(allPPrContent)<w:sectPr>\(sectPr)</w:sectPr></w:pPr></w:p>"
             
-            // Validate: ensure no nested paragraphs in the rebuilt paragraph
-            let paraCount = newLastPara.components(separatedBy: "<w:p").count - 1
+            // Validate: ensure no nested paragraphs in the rebuilt paragraph.
+            // Only a real paragraph tag counts. pgSz, pgMar, pPr, and positionH also start with "<w:p".
+            let paraCount = realParagraphTagCount(in: newLastPara)
             if paraCount > 1 {
                 print("⚠️ ERROR: Rebuilt paragraph still contains nested paragraphs! Count: \(paraCount)")
                 // Last resort: extract only the text content and rebuild from scratch
@@ -5762,12 +6939,13 @@ fileprivate final class DocxTemplateRenderer {
                 // Replace the entire last paragraph
                 modifiedBody.replaceSubrange(lastParaStart..<lastParaEndRange.upperBound, with: newLastPara)
             }
+            }
         } else {
             // No paragraph found, create one with sectPr
             modifiedBody += "<w:p><w:pPr><w:sectPr>\(sectPr)</w:sectPr></w:pPr></w:p>"
         }
         
-        return """
+        return documentXMLWithStartingPageNumber("""
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
                     xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -5778,7 +6956,15 @@ fileprivate final class DocxTemplateRenderer {
             \(modifiedBody)
           </w:body>
         </w:document>
-        """
+        """, startPage: startPage)
+    }
+
+    private func documentXMLWithStartingPageNumber(_ xml: String, startPage: Int) -> String {
+        guard let range = xml.range(of: "<w:sectPr>") else { return xml }
+        if xml[range.upperBound...].hasPrefix("<w:pgNumType") { return xml }
+        var result = xml
+        result.insert(contentsOf: "<w:pgNumType w:start=\"\(startPage)\"/>", at: range.upperBound)
+        return result
     }
 
     private func wrapRelsXML(_ body: String) -> String {
@@ -6291,25 +7477,101 @@ fileprivate final class DocxTemplateRenderer {
     }
 
     private func xmlImageParagraph(relId: String, docPrId: Int, cx: Int, cy: Int, alignment: String? = nil) -> String {
-        let alignmentTag: String
-        if let alignment {
-            alignmentTag = "    <w:pPr><w:jc w:val=\"\(alignment)\"/></w:pPr>\n"
+        let align: String
+        if alignment == "center" {
+            align = "center"
+        } else if alignment == "right" {
+            align = "right"
         } else {
-            alignmentTag = ""
+            align = "left"
         }
+        print("MYDEBUG →", "floating image \(docPrId) align \(align)")
+        let positionH = """
+                <wp:positionH relativeFrom="column">
+                  <wp:align>\(align)</wp:align>
+                </wp:positionH>
+        """
+        let drawing = xmlFloatingPictureAnchor(relId: relId, docPrId: docPrId, cx: cx, cy: cy, positionH: positionH)
         return """
         <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
              xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
              xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
              xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
              xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-        \(alignmentTag)
+          <w:pPr>
+            <w:spacing w:before="0" w:after="0" w:line="1" w:lineRule="exact"/>
+          </w:pPr>
           <w:r>
             <w:drawing>
-              <wp:inline>
+              \(drawing)
+            </w:drawing>
+          </w:r>
+        </w:p>
+        """
+    }
+
+    private func xmlFloatingPictureAnchor(relId: String, docPrId: Int, cx: Int, cy: Int, positionH: String) -> String {
+        let distB = emuInches(0.08)
+        return """
+              <wp:anchor distT="0" distB="\(distB)" distL="0" distR="0" simplePos="0" relativeHeight="251658240" behindDoc="0" layoutInCell="1" locked="0" allowOverlap="1">
+                <wp:simplePos x="0" y="0"/>
+                \(positionH)
+                <wp:positionV relativeFrom="paragraph">
+                  <wp:posOffset>0</wp:posOffset>
+                </wp:positionV>
                 <wp:extent cx="\(cx)" cy="\(cy)"/>
+                <wp:effectExtent l="0" t="0" r="0" b="0"/>
+                <wp:wrapTopAndBottom/>
                 <wp:docPr id="\(docPrId)" name="Image\(docPrId)"/>
-                <wp:cNvGraphicFramePr/>
+                <wp:cNvGraphicFramePr>
+                  <a:graphicFrameLocks noChangeAspect="1"/>
+                </wp:cNvGraphicFramePr>
+                <a:graphic>
+                  <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                    <pic:pic>
+                      <pic:nvPicPr>
+                        <pic:cNvPr id="0" name="Image\(docPrId)"/>
+                        <pic:cNvPicPr/>
+                      </pic:nvPicPr>
+                      <pic:blipFill>
+                        <a:blip r:embed="\(relId)"/>
+                        <a:stretch><a:fillRect/></a:stretch>
+                      </pic:blipFill>
+                      <pic:spPr>
+                        <a:xfrm>
+                          <a:off x="0" y="0"/>
+                          <a:ext cx="\(cx)" cy="\(cy)"/>
+                        </a:xfrm>
+                        <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                      </pic:spPr>
+                    </pic:pic>
+                  </a:graphicData>
+                </a:graphic>
+              </wp:anchor>
+        """
+    }
+    
+    private func xmlInlineImageParagraph(relId: String, docPrId: Int, cx: Int, cy: Int, alignment: String? = nil) -> String {
+        let align = alignment ?? "left"
+        return """
+        <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+             xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+             xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+             xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+          <w:pPr>
+            <w:jc w:val="\(align)"/>
+            <w:spacing w:before="0" w:after="0"/>
+          </w:pPr>
+          <w:r>
+            <w:drawing>
+              <wp:inline distT="0" distB="0" distL="0" distR="0">
+                <wp:extent cx="\(cx)" cy="\(cy)"/>
+                <wp:effectExtent l="0" t="0" r="0" b="0"/>
+                <wp:docPr id="\(docPrId)" name="Image\(docPrId)"/>
+                <wp:cNvGraphicFramePr>
+                  <a:graphicFrameLocks noChangeAspect="1"/>
+                </wp:cNvGraphicFramePr>
                 <a:graphic>
                   <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
                     <pic:pic>
@@ -6337,7 +7599,7 @@ fileprivate final class DocxTemplateRenderer {
         </w:p>
         """
     }
-    
+
     private func xmlAnchoredImageParagraph(relId: String, docPrId: Int, cx: Int, cy: Int, alignment: String? = nil) -> String {
         // Calculate horizontal position based on alignment
         // Page width is 8.5 inches = 7,772,400 EMU
@@ -6413,6 +7675,84 @@ fileprivate final class DocxTemplateRenderer {
         let captionAlignment = alignment.map { "<w:pPr><w:jc w:val=\"\($0)\"/></w:pPr>" } ?? ""
         let captionParagraph = "<w:p>\(captionAlignment)<w:r><w:t xml:space=\"preserve\">\(caption.xmlEscaped)</w:t></w:r></w:p>"
         return imageParagraph + captionParagraph
+    }
+
+    private func xmlFloatingCalibrationRow(entries: [(relId: String, docPrId: Int, resource: DocxImageResource, caption: String)]) -> String {
+        guard !entries.isEmpty else { return "" }
+        print("MYDEBUG →", "floating calibration images: \(entries.count)")
+
+        let gap = entries.count > 1 ? emuInches(0.3) : 0
+        let totalWidth = entries.reduce(0) { $0 + $1.resource.cx } + gap * (entries.count - 1)
+        var x = max(0, (emuInches(8.5) - totalWidth) / 2)
+        var drawings = ""
+        for entry in entries {
+            let positionH = """
+                <wp:positionH relativeFrom="page">
+                  <wp:posOffset>\(x)</wp:posOffset>
+                </wp:positionH>
+            """
+            let anchor = xmlFloatingPictureAnchor(relId: entry.relId, docPrId: entry.docPrId, cx: entry.resource.cx, cy: entry.resource.cy, positionH: positionH)
+            drawings += """
+            <w:r>
+              <w:drawing>
+                \(anchor)
+              </w:drawing>
+            </w:r>
+            """
+            x += entry.resource.cx + gap
+        }
+
+        var xml = """
+        <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+             xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+             xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+             xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+          <w:pPr>
+            <w:spacing w:before="0" w:after="0" w:line="1" w:lineRule="exact"/>
+          </w:pPr>
+          \(drawings)
+        </w:p>
+        """
+
+        if entries.count == 1 {
+            xml += "<w:p><w:pPr><w:jc w:val=\"center\"/><w:spacing w:before=\"0\" w:after=\"0\"/></w:pPr><w:r><w:t xml:space=\"preserve\">\(entries[0].caption.xmlEscaped)</w:t></w:r></w:p>"
+            return xml
+        }
+
+        let noBorders = "<w:top w:val=\"nil\"/><w:left w:val=\"nil\"/><w:bottom w:val=\"nil\"/><w:right w:val=\"nil\"/>"
+        let gapTwips = gap / 635
+        var grid = ""
+        var cells = ""
+        var tableTwips = 0
+        for (index, entry) in entries.enumerated() {
+            let colTwips = max(1, entry.resource.cx / 635)
+            if index > 0 {
+                grid += "<w:gridCol w:w=\"\(gapTwips)\"/>"
+                cells += "<w:tc><w:tcPr><w:tcW w:w=\"\(gapTwips)\" w:type=\"dxa\"/><w:tcBorders>\(noBorders)</w:tcBorders></w:tcPr><w:p/></w:tc>"
+                tableTwips += gapTwips
+            }
+            grid += "<w:gridCol w:w=\"\(colTwips)\"/>"
+            cells += "<w:tc><w:tcPr><w:tcW w:w=\"\(colTwips)\" w:type=\"dxa\"/><w:tcBorders>\(noBorders)</w:tcBorders></w:tcPr><w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\"/></w:pPr><w:r><w:t xml:space=\"preserve\">\(entry.caption.xmlEscaped)</w:t></w:r></w:p></w:tc>"
+            tableTwips += colTwips
+        }
+
+        xml += """
+        <w:tbl xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:tblPr>
+            <w:tblW w:w="\(tableTwips)" w:type="dxa"/>
+            <w:jc w:val="center"/>
+            <w:tblBorders>
+              \(noBorders)
+              <w:insideH w:val="nil"/>
+              <w:insideV w:val="nil"/>
+            </w:tblBorders>
+          </w:tblPr>
+          <w:tblGrid>\(grid)</w:tblGrid>
+          <w:tr>\(cells)</w:tr>
+        </w:tbl>
+        """
+        return xml
     }
     
     private func xmlAnchoredImageInCell(relId: String, docPrId: Int, cx: Int, cy: Int, alignment: String? = nil) -> String {
@@ -7103,29 +8443,255 @@ fileprivate final class DocxTemplateRenderer {
         }
     }
 
-    private func xmlPhotoPage(entries: [(relId: String, docPrId: Int, resource: DocxImageResource, caption: String)]) -> String {
-        switch entries.count {
-        case 0:
-            return ""
-        case 1:
-            let spacer = xmlSpacerParagraph(before: 2160, after: 2160, centered: true)
-            let content = xmlImageWithCaption(relId: entries[0].relId, docPrId: entries[0].docPrId, caption: entries[0].caption, cx: entries[0].resource.cx, cy: entries[0].resource.cy, alignment: "center")
-            return spacer + content + spacer
-        case 2:
-            let spacer = xmlSpacerParagraph(before: 2160, after: 2160, centered: true)
-            let table = xmlPhotoTable(rows: 1, columns: 2, entries: entries, centered: true)
-            return spacer + table + spacer
-        case 3:
-            let firstRow = Array(entries[0...1])
-            let secondRow = [entries[2]]
-            let top = xmlPhotoTable(rows: 1, columns: 2, entries: firstRow, centered: false)
-            let bottom = xmlPhotoTable(rows: 1, columns: 1, entries: secondRow, centered: true)
-            return top + "<w:p/>" + bottom
-        default:
-            let spacer = xmlSpacerParagraph(before: 720, after: 720, centered: true)
-            let table = xmlPhotoTable(rows: 2, columns: 2, entries: entries, centered: true)
-            return spacer + table + spacer
+    private func emuInches(_ inches: Double) -> Int {
+        Int(inches * 914_400)
+    }
+
+    /// Fit a picture inside a max box, shrinking width when the height cap would otherwise stretch it.
+    private func fittedExtent(heightOverWidth: CGFloat, maxWidthInches: CGFloat, maxHeightInches: CGFloat) -> (cx: Int, cy: Int) {
+        let aspect: CGFloat = heightOverWidth > 0 ? heightOverWidth : 1
+        var width = maxWidthInches
+        var height = width * aspect
+        if height > maxHeightInches {
+            height = maxHeightInches
+            width = height / aspect
         }
+        print("MYDEBUG →", "fitted image \(width) x \(height) in")
+        return (emuInches(Double(width)), emuInches(Double(height)))
+    }
+
+    /// Height of a 10 pt caption box for `text` at `widthEMU`, with a two-line minimum and a few points of slack.
+    private func measuredCaptionHeight(text: String, widthEMU: Int) -> Int {
+        let font = NSFont(name: "Graphik", size: 10) ?? NSFont.systemFont(ofSize: 10)
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byWordWrapping
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .paragraphStyle: style
+        ]
+        let widthPoints = CGFloat(widthEMU) / 914_400 * 72
+        let measureWidth = max(widthPoints - 6, 36)
+        let bounds = NSAttributedString(string: text, attributes: attributes).boundingRect(
+            with: CGSize(width: measureWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            context: nil
+        )
+        let minimum = font.lineHeight * 2 + 4
+        let heightPoints = max(ceil(bounds.height) + 4, minimum)
+        return Int((heightPoints / 72) * 914_400)
+    }
+
+    private func xmlPageAnchoredImage(relId: String, docPrId: Int, cx: Int, cy: Int, x: Int, y: Int) -> String {
+        return """
+          <w:r>
+            <w:drawing>
+              <wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="251658240" behindDoc="0" layoutInCell="1" locked="0" allowOverlap="1">
+                <wp:simplePos x="0" y="0"/>
+                <wp:positionH relativeFrom="page">
+                  <wp:posOffset>\(x)</wp:posOffset>
+                </wp:positionH>
+                <wp:positionV relativeFrom="page">
+                  <wp:posOffset>\(y)</wp:posOffset>
+                </wp:positionV>
+                <wp:extent cx="\(cx)" cy="\(cy)"/>
+                <wp:effectExtent l="0" t="0" r="0" b="0"/>
+                <wp:wrapNone/>
+                <wp:docPr id="\(docPrId)" name="Image\(docPrId)"/>
+                <wp:cNvGraphicFramePr>
+                  <a:graphicFrameLocks noChangeAspect="1"/>
+                </wp:cNvGraphicFramePr>
+                <a:graphic>
+                  <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                    <pic:pic>
+                      <pic:nvPicPr>
+                        <pic:cNvPr id="0" name="Image\(docPrId)"/>
+                        <pic:cNvPicPr/>
+                      </pic:nvPicPr>
+                      <pic:blipFill>
+                        <a:blip r:embed="\(relId)"/>
+                        <a:stretch><a:fillRect/></a:stretch>
+                      </pic:blipFill>
+                      <pic:spPr>
+                        <a:xfrm>
+                          <a:off x="0" y="0"/>
+                          <a:ext cx="\(cx)" cy="\(cy)"/>
+                        </a:xfrm>
+                        <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                      </pic:spPr>
+                    </pic:pic>
+                  </a:graphicData>
+                </a:graphic>
+              </wp:anchor>
+            </w:drawing>
+          </w:r>
+        """
+    }
+
+    private func xmlPageAnchoredCaption(text: String, docPrId: Int, x: Int, y: Int, width: Int, height: Int) -> String {
+        let textBoxId = docPrId + 100_000
+        return """
+          <w:r>
+            <w:drawing>
+              <wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="251658241" behindDoc="0" layoutInCell="1" locked="0" allowOverlap="1">
+                <wp:simplePos x="0" y="0"/>
+                <wp:positionH relativeFrom="page">
+                  <wp:posOffset>\(x)</wp:posOffset>
+                </wp:positionH>
+                <wp:positionV relativeFrom="page">
+                  <wp:posOffset>\(y)</wp:posOffset>
+                </wp:positionV>
+                <wp:extent cx="\(width)" cy="\(height)"/>
+                <wp:effectExtent l="0" t="0" r="0" b="0"/>
+                <wp:wrapNone/>
+                <wp:docPr id="\(textBoxId)" name="TextBox\(textBoxId)"/>
+                <wp:cNvGraphicFramePr>
+                  <a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/>
+                </wp:cNvGraphicFramePr>
+                <a:graphic>
+                  <a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                    <wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">
+                      <wps:cNvPr id="\(textBoxId)" name="TextBox\(textBoxId)"/>
+                      <wps:cNvSpPr txBox="1"/>
+                      <wps:spPr>
+                        <a:xfrm>
+                          <a:off x="\(x)" y="\(y)"/>
+                          <a:ext cx="\(width)" cy="\(height)"/>
+                        </a:xfrm>
+                        <a:prstGeom prst="rect">
+                          <a:avLst/>
+                        </a:prstGeom>
+                        <a:noFill/>
+                        <a:ln w="0">
+                          <a:noFill/>
+                        </a:ln>
+                      </wps:spPr>
+                      <wps:txbx>
+                        <w:txbxContent>
+                          <w:p>
+                            <w:pPr>
+                              <w:jc w:val="left"/>
+                              <w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>
+                            </w:pPr>
+                            <w:r>
+                              <w:rPr>
+                                <w:rFonts w:ascii="Graphik" w:hAnsi="Graphik" w:eastAsia="Graphik" w:cstheme="minorHAnsi"/>
+                                <w:sz w:val="20"/>
+                                <w:szCs w:val="20"/>
+                                <w:color w:val="000000"/>
+                              </w:rPr>
+                              <w:t xml:space="preserve">\(text.xmlEscaped)</w:t>
+                            </w:r>
+                          </w:p>
+                        </w:txbxContent>
+                      </wps:txbx>
+                      <wps:bodyPr wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" rtlCol="0" anchor="t"/>
+                    </wps:wsp>
+                  </a:graphicData>
+                </a:graphic>
+              </wp:anchor>
+            </w:drawing>
+          </w:r>
+        """
+    }
+
+    private func xmlPhotoPage(entries: [(relId: String, docPrId: Int, resource: DocxImageResource, caption: String)]) -> String {
+        guard !entries.isEmpty else { return "" }
+        let visible = Array(entries.prefix(4))
+        print("MYDEBUG →", "photo page anchored entries: \(visible.count)")
+
+        let pageContentBottom = emuInches(9.9)
+        let firstRowY = emuInches(1.65)
+        let captionGap = emuInches(0.05)
+        let rowGap = emuInches(0.08)
+        let columnGap = emuInches(0.3)
+        let leftColumnX = emuInches(0.5)
+        var photoSlot = emuInches(3.6)
+        let twoRows = visible.count > 2
+
+        func tallestCaption(row: Int, width: Int) -> Int {
+            let start = row * 2
+            let slice = visible[start..<min(start + 2, visible.count)]
+            return slice.map { measuredCaptionHeight(text: $0.caption, widthEMU: width) }.max() ?? emuInches(0.36)
+        }
+
+        var row0Caption = 0
+        var row1Caption = 0
+        if twoRows {
+            let floorSlot = emuInches(2.4)
+            for _ in 0..<4 {
+                row0Caption = tallestCaption(row: 0, width: photoSlot)
+                row1Caption = tallestCaption(row: 1, width: photoSlot)
+                let bottom = firstRowY + photoSlot + captionGap + row0Caption + rowGap + photoSlot + captionGap + row1Caption
+                if bottom <= pageContentBottom { break }
+                let next = photoSlot - ((bottom - pageContentBottom) / 2 + emuInches(0.02))
+                if next <= floorSlot {
+                    photoSlot = floorSlot
+                    row0Caption = tallestCaption(row: 0, width: photoSlot)
+                    row1Caption = tallestCaption(row: 1, width: photoSlot)
+                    let fittedBottom = firstRowY + photoSlot + captionGap + row0Caption + rowGap + photoSlot + captionGap + row1Caption
+                    if fittedBottom > pageContentBottom {
+                        let budget = pageContentBottom - (firstRowY + photoSlot + captionGap + rowGap + photoSlot + captionGap)
+                        let total = max(row0Caption + row1Caption, 1)
+                        row0Caption = max(emuInches(0.36), budget * row0Caption / total)
+                        row1Caption = max(emuInches(0.36), budget - row0Caption)
+                    }
+                    break
+                }
+                photoSlot = next
+            }
+        }
+        print("MYDEBUG →", "photo slot \(photoSlot) row captions \(row0Caption) \(row1Caption)")
+
+        let rightColumnX = leftColumnX + photoSlot + columnGap
+        let centeredX = (emuInches(8.5) - photoSlot) / 2
+        let secondRowY = firstRowY + photoSlot + captionGap + row0Caption + rowGap
+
+        var drawings = ""
+        for (index, entry) in visible.enumerated() {
+            let row = index / 2
+            let isCentered = visible.count == 1 || (visible.count == 3 && index == 2)
+            let x: Int
+            if isCentered {
+                x = centeredX
+            } else if index % 2 == 0 {
+                x = leftColumnX
+            } else {
+                x = rightColumnX
+            }
+            let display = min(photoSlot, min(entry.resource.cx, entry.resource.cy))
+            let imageY = row == 0 ? firstRowY : secondRowY
+            let measured = measuredCaptionHeight(text: entry.caption, widthEMU: display)
+            let captionHeight = twoRows ? min(measured, row == 0 ? row0Caption : row1Caption) : measured
+            let captionY = imageY + display + captionGap
+            drawings += xmlPageAnchoredImage(
+                relId: entry.relId,
+                docPrId: entry.docPrId,
+                cx: display,
+                cy: display,
+                x: x,
+                y: imageY
+            )
+            drawings += xmlPageAnchoredCaption(
+                text: entry.caption,
+                docPrId: entry.docPrId,
+                x: x,
+                y: captionY,
+                width: display,
+                height: captionHeight
+            )
+        }
+        return """
+        <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+             xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+             xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+             xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"
+             xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+          <w:pPr>
+            <w:spacing w:before="0" w:after="0" w:line="1" w:lineRule="exact"/>
+          </w:pPr>
+          \(drawings)
+        </w:p>
+        """
     }
 
     private func xmlPhotoTable(rows: Int, columns: Int, entries: [(relId: String, docPrId: Int, resource: DocxImageResource, caption: String)], centered: Bool) -> String {

@@ -7,6 +7,7 @@
 
 import SwiftUI
 import CoreData
+import AppKit
 
 /// Sort order for the jobs list. Persisted via AppStorage.
 enum JobSortOrder: String, CaseIterable {
@@ -22,18 +23,26 @@ enum JobListFilter: String, CaseIterable {
 }
 
 struct ContentView: View {
+    // Connection test comment.
     // UserDefaults key for storing last selected job
     private let lastSelectedJobKey = "lastSelectedJobId"
     @Environment(\.managedObjectContext) private var viewContext
     @State private var showingImportSheet = false
     @State private var showingCreateJobSheet = false
     @State private var showingSettings = false
+    @Environment(\.openWindow) private var openWindow
     @State private var selectedJob: Job?
     @State private var showingDeleteConfirmation = false
     @State private var jobsToDelete: [Job] = []
     @State private var sidebarRefreshId = UUID()
     @AppStorage("jobsSortOrder") private var jobsSortOrderRaw: String = JobSortOrder.newestFirst.rawValue
     @AppStorage("jobsListFilter") private var selectedFilterRaw: String = JobListFilter.inProgress.rawValue
+    @State private var isExportingAllJobs = false
+    @State private var exportProgress: Double = 0.0
+    @State private var currentExportingJob: String?
+    @State private var allJobsExportError: String?
+    @State private var currentExportScopeTitle = "All Reports"
+    @State private var showingCoreDataLoadError = false
 
     @FetchRequest(
         sortDescriptors: [NSSortDescriptor(keyPath: \Job.createdAt, ascending: false)],
@@ -80,6 +89,21 @@ struct ContentView: View {
         }
     }
 
+    private var inProgressJobs: [Job] {
+        sortedJobs.filter { job in
+            let status = job.currentStatus
+            return status == .newImport || status == .inProgress || status == .tested
+        }
+    }
+
+    private var deliveredJobs: [Job] {
+        sortedJobs.filter { job in job.currentStatus == .reportDelivered }
+    }
+
+    private var archivedJobs: [Job] {
+        sortedJobs.filter { job in job.currentStatus == .backedUpToArchive }
+    }
+
     var body: some View {
         NavigationSplitView {
             SidebarView(
@@ -91,14 +115,18 @@ struct ContentView: View {
                 selectedJob: $selectedJob,
                 showingImportSheet: $showingImportSheet,
                 showingCreateJobSheet: $showingCreateJobSheet,
-                showingSettings: $showingSettings,
                 onDelete: deleteJobs,
                 jobsToDelete: $jobsToDelete,
-                showingDeleteConfirmation: $showingDeleteConfirmation
+                showingDeleteConfirmation: $showingDeleteConfirmation,
+                allJobs: sortedJobs,
+                inProgressJobs: inProgressJobs,
+                deliveredJobs: deliveredJobs,
+                archivedJobs: archivedJobs,
+                onExportJobs: exportJobs
             )
         } detail: {
             if let selectedJob = selectedJob {
-                JobDetailView(job: selectedJob)
+                JobDetailView(job: selectedJob, showingSettings: $showingSettings)
             } else {
                 VStack(spacing: 20) {
                     Image(systemName: "doc.text")
@@ -113,6 +141,16 @@ struct ContentView: View {
                         .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .navigationTitle("Job Details")
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            showingSettings = true
+                        } label: {
+                            Label("Settings", systemImage: "gear")
+                        }
+                    }
+                }
             }
         }
         .sheet(isPresented: $showingImportSheet) {
@@ -120,9 +158,6 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingCreateJobSheet) {
             CreateJobView()
-        }
-        .sheet(isPresented: $showingSettings) {
-            SettingsView()
         }
         .alert("Delete Job\(jobsToDelete.count > 1 ? "s" : "")", isPresented: $showingDeleteConfirmation) {
             Button("Cancel", role: .cancel) {
@@ -137,6 +172,11 @@ struct ContentView: View {
             } else {
                 Text("Are you sure you want to delete \(jobsToDelete.count) jobs? This action cannot be undone.")
             }
+        }
+        .onChange(of: showingSettings) { _, isShowing in
+            guard isShowing else { return }
+            openWindow(id: "settings")
+            showingSettings = false
         }
         .onAppear {
             // Try to restore the last selected job from UserDefaults
@@ -165,6 +205,56 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .createNewJob)) { _ in
             showingCreateJobSheet = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .backupAllJobsRequested)) { _ in
+            exportJobs(Array(jobs), scopeTitle: "All Reports")
+        }
+        .overlay {
+            if isExportingAllJobs {
+                ZStack {
+                    Color.black.opacity(0.5)
+                        .ignoresSafeArea()
+                    VStack(spacing: 20) {
+                        ProgressView()
+                            .scaleEffect(1.5)
+                        Text("Backing up \(currentExportScopeTitle)...")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                        if let currentJob = currentExportingJob {
+                            Text("Processing: \(currentJob)")
+                                .font(.subheadline)
+                                .foregroundColor(.white.opacity(0.9))
+                        }
+                        ProgressView(value: exportProgress)
+                            .frame(width: 250)
+                        Text("\(Int(exportProgress * 100))%")
+                            .foregroundColor(.white.opacity(0.8))
+                    }
+                    .padding(30)
+                    .background(Color(nsColor: .windowBackgroundColor).opacity(0.95))
+                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                }
+            }
+        }
+        .onAppear {
+            showingCoreDataLoadError = PersistenceController.shared.loadError != nil
+        }
+        .alert("Database Error", isPresented: $showingCoreDataLoadError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            if let error = PersistenceController.shared.loadError {
+                Text(error.localizedDescription)
+            }
+        }
+        .alert("Backup Failed", isPresented: Binding(
+            get: { allJobsExportError != nil },
+            set: { if !$0 { allJobsExportError = nil } }
+        )) {
+            Button("OK", role: .cancel) { allJobsExportError = nil }
+        } message: {
+            if let error = allJobsExportError {
+                Text(error)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .jobDataUpdated)) { notification in
             if let updatedJob = notification.object as? Job {
@@ -208,6 +298,84 @@ struct ContentView: View {
             jobsToDelete = []
         }
     }
+
+    private func exportJobs(_ jobsToExport: [Job], scopeTitle: String) {
+        guard !jobsToExport.isEmpty else { return }
+        guard !isExportingAllJobs else { return }
+
+        isExportingAllJobs = true
+        exportProgress = 0.0
+        currentExportingJob = nil
+        allJobsExportError = nil
+        currentExportScopeTitle = scopeTitle
+
+        Task {
+            do {
+                let exporter = BulkJobsExporter(jobs: jobsToExport)
+                exporter.onProgress = { currentIndex, totalJobs, jobName in
+                    DispatchQueue.main.async {
+                        self.currentExportingJob = jobName
+                        self.exportProgress = Double(currentIndex + 1) / Double(totalJobs)
+                    }
+                }
+
+                let zipURL = try await exporter.exportAllJobs()
+
+                await MainActor.run {
+                    self.markJobsBackedUpToArchive(jobsToExport)
+                    self.isExportingAllJobs = false
+                    self.exportProgress = 1.0
+                    self.currentExportingJob = nil
+                    self.presentBackupShareSheet(for: zipURL)
+                }
+            } catch {
+                print("MYDEBUG →", "Bulk export failed: \(error.localizedDescription)")
+                await MainActor.run {
+                    self.allJobsExportError = error.localizedDescription
+                    self.isExportingAllJobs = false
+                    self.currentExportingJob = nil
+                }
+            }
+        }
+    }
+
+    private func markJobsBackedUpToArchive(_ jobsToMark: [Job]) {
+        guard !jobsToMark.isEmpty else { return }
+        for job in jobsToMark {
+            job.markBackedUpToArchive()
+        }
+        do {
+            try viewContext.save()
+            NotificationCenter.default.post(name: .jobDataUpdated, object: nil)
+            print("MYDEBUG →", "Marked \(jobsToMark.count) job(s) as archived after backup")
+        } catch {
+            print("MYDEBUG →", "Failed to mark jobs archived after backup: \(error.localizedDescription)")
+        }
+    }
+
+    private func presentBackupShareSheet(for url: URL) {
+        let savePanel = NSSavePanel()
+        savePanel.title = "Save Jobs Backup"
+        savePanel.nameFieldStringValue = url.lastPathComponent
+        savePanel.directoryURL = url.deletingLastPathComponent()
+        savePanel.canCreateDirectories = true
+        savePanel.begin { response in
+            guard response == .OK, let destination = savePanel.url else {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+                return
+            }
+            do {
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.copyItem(at: url, to: destination)
+                NSWorkspace.shared.activateFileViewerSelecting([destination])
+            } catch {
+                print("MYDEBUG →", "Failed to copy backup ZIP: \(error.localizedDescription)")
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+        }
+    }
 }
 
 struct SidebarView: View {
@@ -219,10 +387,14 @@ struct SidebarView: View {
     @Binding var selectedJob: Job?
     @Binding var showingImportSheet: Bool
     @Binding var showingCreateJobSheet: Bool
-    @Binding var showingSettings: Bool
     let onDelete: (IndexSet) -> Void
     @Binding var jobsToDelete: [Job]
     @Binding var showingDeleteConfirmation: Bool
+    let allJobs: [Job]
+    let inProgressJobs: [Job]
+    let deliveredJobs: [Job]
+    let archivedJobs: [Job]
+    let onExportJobs: ([Job], String) -> Void
     @Environment(\.managedObjectContext) private var viewContext
 
     private var jobsSortOrder: JobSortOrder {
@@ -332,6 +504,26 @@ struct SidebarView: View {
                 }
             }
             ToolbarItem(placement: .automatic) {
+                Menu {
+                    Button("Backup All Jobs (\(allJobs.count))") {
+                        onExportJobs(allJobs, "All Reports")
+                    }
+                    Divider()
+                    Button("In Progress (\(inProgressJobs.count))") {
+                        onExportJobs(inProgressJobs, "In Progress")
+                    }
+                    Button("Delivered (\(deliveredJobs.count))") {
+                        onExportJobs(deliveredJobs, "Delivered")
+                    }
+                    Button("Archived (\(archivedJobs.count))") {
+                        onExportJobs(archivedJobs, "Archived")
+                    }
+                } label: {
+                    Label("Backup Jobs", systemImage: "archivebox")
+                }
+                .disabled(allJobs.isEmpty)
+            }
+            ToolbarItem(placement: .automatic) {
                 if selectedJob != nil {
                     Button(role: .destructive, action: {
                         if let job = selectedJob {
@@ -356,13 +548,6 @@ struct SidebarView: View {
                     Label("Sort", systemImage: "arrow.up.arrow.down.circle")
                 }
                 .help("Sort jobs list")
-            }
-            ToolbarItem(placement: .automatic) {
-                Button(action: {
-                    showingSettings = true
-                }) {
-                    Label("Settings", systemImage: "gear")
-                }
             }
         }
     }

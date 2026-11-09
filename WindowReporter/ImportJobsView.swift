@@ -8,12 +8,12 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-private struct DuplicateResolutionSheetItem: Identifiable {
+struct DuplicateResolutionSheetItem: Identifiable {
     let id = UUID()
     let addressSummary: String
 }
 
-private struct DuplicateResolutionSheet: View {
+struct DuplicateResolutionSheet: View {
     let addressSummary: String
     let onReplace: () -> Void
     let onSkip: () -> Void

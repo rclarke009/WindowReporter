@@ -32,6 +32,10 @@ struct WindowReporterApp: App {
                 .keyboardShortcut("n", modifiers: .command)
             }
         }
+
+        SwiftUI.Window("Settings", id: "settings") {
+            SettingsView()
+        }
     }
     
     private func ensureSignatureImagesAvailable() {
