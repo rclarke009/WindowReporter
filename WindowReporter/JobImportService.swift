@@ -115,7 +115,10 @@ struct FullJobPackage: Codable {
         let customTestPerformedText: String?
         let customBackgroundInformationText: String?
         let customRecommendationsText: String?
+        let customReportName: String?
+        let customEngineeringLetterParagraph1: String?
         let customEngineeringLetterParagraph2: String?
+        let customEngineeringLetterParagraph3: String?
         let includePageNumbersInReport: Bool?
         let includeAddressInReport: Bool?
         let reportStartingPageNumber: Int?
@@ -757,7 +760,10 @@ class JobImportService: ObservableObject {
         job.customTestPerformedText = package.job.customTestPerformedText
         job.customBackgroundInformationText = package.job.customBackgroundInformationText
         job.customRecommendationsText = package.job.customRecommendationsText
+        job.customReportName = package.job.customReportName
+        job.customEngineeringLetterParagraph1 = package.job.customEngineeringLetterParagraph1
         job.customEngineeringLetterParagraph2 = package.job.customEngineeringLetterParagraph2
+        job.customEngineeringLetterParagraph3 = package.job.customEngineeringLetterParagraph3
         job.includePageNumbersInReport = package.job.includePageNumbersInReport ?? true
         job.includeAddressInReport = package.job.includeAddressInReport ?? true
         job.reportStartingPageNumber = Int32(max(1, package.job.reportStartingPageNumber ?? 1))
@@ -1189,7 +1195,10 @@ class JobImportService: ObservableObject {
             if let v = p.customTestPerformedText { job.customTestPerformedText = v }
             if let v = p.customBackgroundInformationText { job.customBackgroundInformationText = v }
             if let v = p.customRecommendationsText { job.customRecommendationsText = v }
+            if let v = p.customReportName { job.customReportName = v }
+            if let v = p.customEngineeringLetterParagraph1 { job.customEngineeringLetterParagraph1 = v }
             if let v = p.customEngineeringLetterParagraph2 { job.customEngineeringLetterParagraph2 = v }
+            if let v = p.customEngineeringLetterParagraph3 { job.customEngineeringLetterParagraph3 = v }
             if let v = p.includePageNumbersInReport { job.includePageNumbersInReport = v }
             if let v = p.includeAddressInReport { job.includeAddressInReport = v }
             if let v = p.reportStartingPageNumber { job.reportStartingPageNumber = Int32(max(1, v)) }
@@ -1262,7 +1271,10 @@ class JobImportService: ObservableObject {
             newJob.customTestPerformedText = p.customTestPerformedText
             newJob.customBackgroundInformationText = p.customBackgroundInformationText
             newJob.customRecommendationsText = p.customRecommendationsText
+            newJob.customReportName = p.customReportName
+            newJob.customEngineeringLetterParagraph1 = p.customEngineeringLetterParagraph1
             newJob.customEngineeringLetterParagraph2 = p.customEngineeringLetterParagraph2
+            newJob.customEngineeringLetterParagraph3 = p.customEngineeringLetterParagraph3
             newJob.includePageNumbersInReport = p.includePageNumbersInReport ?? true
             newJob.includeAddressInReport = p.includeAddressInReport ?? true
             newJob.reportStartingPageNumber = Int32(max(1, p.reportStartingPageNumber ?? 1))

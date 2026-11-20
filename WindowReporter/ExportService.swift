@@ -264,6 +264,43 @@ func engineeringLetterParagraph2IsCustom(_ text: String?) -> Bool {
     return !trimmed.isEmpty && trimmed != engineeringLetterParagraph2Default
 }
 
+func engineeringLetterParagraph1Default(for job: Job) -> String {
+    let addressToUse = job.addressLine1 ?? job.cleanedAddressLine1 ?? ""
+    let place = addressToUse.isEmpty ? "the property" : addressToUse
+    return "True Reports Inc., in collaboration with my individual firm, has conducted an evaluation of the condition of the windows at the property located at \(place), as detailed in the attached report. The opinions presented in this report have been formulated within a reasonable degree of professional certainty. These opinions are based on a review of the available information, associated research, as well as our knowledge, training and experience. True Reports Inc. reserves the right to update this report should additional information become available. The True Reports Inc's investigation of the property at \(place) was performed by the True Reports Inc. Field Inspection Team under my direct supervision."
+}
+
+let engineeringLetterParagraph3Default = "True Reports Inc. appreciates the opportunity to assist with this inspection. Please call if you have any questions."
+
+func engineeringLetterParagraphIsCustom(_ text: String?, defaultText: String) -> Bool {
+    let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return !trimmed.isEmpty && trimmed != defaultText
+}
+
+/// Job override, then team boilerplate, then the built-in sentence. The built-in first paragraph still inserts the live address.
+private func engineeringLetterParagraph1(for job: Job) -> String {
+    let builtIn = engineeringLetterParagraph1Default(for: job)
+    if engineeringLetterParagraphIsCustom(job.customEngineeringLetterParagraph1, defaultText: builtIn),
+       let custom = job.customEngineeringLetterParagraph1 {
+        return custom
+    }
+    if let teamText = ReportBoilerplateDefaults.text(for: "engineering_letter_para1") {
+        return teamText
+    }
+    return builtIn
+}
+
+private func engineeringLetterParagraph3(for job: Job) -> String {
+    if engineeringLetterParagraphIsCustom(job.customEngineeringLetterParagraph3, defaultText: engineeringLetterParagraph3Default),
+       let custom = job.customEngineeringLetterParagraph3 {
+        return custom
+    }
+    if let teamText = ReportBoilerplateDefaults.text(for: "engineering_letter_para3") {
+        return teamText
+    }
+    return engineeringLetterParagraph3Default
+}
+
 /// Job override, then team boilerplate, then the built-in storm-damage sentence.
 private func engineeringLetterParagraph2(for job: Job) -> String {
     if engineeringLetterParagraph2IsCustom(job.customEngineeringLetterParagraph2),
@@ -2055,7 +2092,7 @@ struct FieldResultsPackage {
         let contentWidth = pageRect.width - 100
         
         // First paragraph - use Works Cited pattern: rect.y = currentY - height so rect top is at currentY
-        let paragraph1 = "True Reports Inc., in collaboration with my individual firm, has conducted an evaluation of the condition of the windows at the property located at \(addressToUse.isEmpty ? "the property" : addressToUse), as detailed in the attached report. The opinions presented in this report have been formulated within a reasonable degree of professional certainty. These opinions are based on a review of the available information, associated research, as well as our knowledge, training and experience. True Reports Inc. reserves the right to update this report should additional information become available. The True Reports Inc's investigation of the property at \(addressToUse.isEmpty ? "the property" : addressToUse) was performed by the True Reports Inc. Field Inspection Team under my direct supervision."
+        let paragraph1 = engineeringLetterParagraph1(for: job)
         let paragraph1Bounding = paragraph1.boundingRect(with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: bodyAttributesWithSpacing, context: nil)
         let paragraph1Height = ceil(paragraph1Bounding.height) + 6  // Buffer to avoid clipping (matches drawBlock)
         let paragraph1Rect = CGRect(x: 50, y: currentY - paragraph1Height, width: contentWidth, height: paragraph1Height)
@@ -2071,7 +2108,7 @@ struct FieldResultsPackage {
         currentY -= paragraph2Height + 12  // Match iOS: gap between body paragraphs
         
         // Third paragraph
-        let paragraph3 = "True Reports Inc. appreciates the opportunity to assist with this inspection. Please call if you have any questions."
+        let paragraph3 = engineeringLetterParagraph3(for: job)
         let paragraph3Bounding = paragraph3.boundingRect(with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: bodyAttributesWithSpacing, context: nil)
         let paragraph3Height = ceil(paragraph3Bounding.height) + 2  // Buffer to avoid clipping (matches drawBlock)
         let paragraph3Rect = CGRect(x: 50, y: currentY - paragraph3Height, width: contentWidth, height: paragraph3Height)
@@ -4664,7 +4701,10 @@ class FullJobPackageExporter {
             customTestPerformedText: job.customTestPerformedText,
             customBackgroundInformationText: job.customBackgroundInformationText,
             customRecommendationsText: job.customRecommendationsText,
+            customReportName: job.customReportName,
+            customEngineeringLetterParagraph1: job.customEngineeringLetterParagraph1,
             customEngineeringLetterParagraph2: job.customEngineeringLetterParagraph2,
+            customEngineeringLetterParagraph3: job.customEngineeringLetterParagraph3,
             includePageNumbersInReport: job.includePageNumbersInReport,
             includeAddressInReport: job.includeAddressInReport,
             reportStartingPageNumber: Int(job.reportStartingPageNumber),
@@ -5924,13 +5964,13 @@ fileprivate final class DocxTemplateRenderer {
         xml += xmlEngineeringLetterParagraph(salutation, spacingBefore: 80, spacingAfter: 120)
         
         // Body paragraphs
-        let paragraph1 = "True Reports Inc., in collaboration with my individual firm, has conducted an evaluation of the condition of the windows at the property located at \(addressToUse.isEmpty ? "the property" : addressToUse), as detailed in the attached report. The opinions presented in this report have been formulated within a reasonable degree of professional certainty. These opinions are based on a review of the available information, associated research, as well as our knowledge, training and experience. True Reports Inc. reserves the right to update this report should additional information become available. The True Reports Inc's investigation of the property at \(addressToUse.isEmpty ? "the property" : addressToUse) was performed by the True Reports Inc. Field Inspection Team under my direct supervision."
+        let paragraph1 = engineeringLetterParagraph1(for: job)
         xml += xmlEngineeringLetterParagraph(paragraph1, spacingBefore: 0, spacingAfter: 60)
         
         let paragraph2 = engineeringLetterParagraph2(for: job)
         xml += xmlEngineeringLetterParagraph(paragraph2, spacingBefore: 0, spacingAfter: 60)
         
-        let paragraph3 = "True Reports Inc. appreciates the opportunity to assist with this inspection. Please call if you have any questions."
+        let paragraph3 = engineeringLetterParagraph3(for: job)
         xml += xmlEngineeringLetterParagraph(paragraph3, spacingBefore: 0, spacingAfter: 60)
         
         // Closing
